@@ -139,7 +139,8 @@ def render(t, series, metadata):
     elif scene==len(scenes)-2 and metadata.get('pressure'):
         text(64,title_y,'Le carnet ajoute-t-il un signal ?',48,FG,True)
         n, total, fills, rows = metadata['pressure']
-        text(64,221,f'{n} marchés comparables sur {total} · Brier à 500 ms · plus bas = mieux',24,MUTED)
+        comparable = 'marché comparable' if n==1 else 'marchés comparables'
+        text(64,221,f'{n} {comparable} sur {total} · Brier à 500 ms · plus bas = mieux',24,MUTED)
         largest = max(value for _,value in rows) or 1
         best = min(value for _,value in rows)
         for i,(label,value) in enumerate(rows):
@@ -148,7 +149,8 @@ def render(t, series, metadata):
             color = MINT if value==best else GOLD
             d.rounded_rectangle((405,y+8,410+int(535*value/largest*ease),y+26),radius=5,fill=color)
             text(979,y,f'{value:.5f}'.replace('.',','),23,color,True)
-        text(64,601,f'{fills} fill(s) au total sur les cinq variantes à 500 ms.',22,MUTED)
+        fill_label = 'exécution simulée' if fills<=1 else 'exécutions simulées'
+        text(64,601,f'{fills} {fill_label} sur les cinq variantes à 500 ms.',22,MUTED)
     else:
         text(64,title_y,'Le prochain verdict',55,FG,True)
         text(64,226,'Collecte prospective · protocole figé',25,MUTED)
