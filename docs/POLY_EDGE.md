@@ -48,6 +48,8 @@ L’onglet **Sorties** montre le markout exécutable de la position après 250 m
 
 Le worker reprend les entrées prouvées dans l’export du banc et enregistre les observations compactes avant rotation du CLOB. Il calcule des scénarios descriptifs de sortie, sans changer les règles figées du bloc prospectif. Le benchmark distingue les marchés antérieurs et postérieurs au seuil de l’expérience de flux.
 
+L’onglet **Taille** affiche les résultats à 15 s pour 5, 10, 25, 50 et 100 parts. La capacité est conditionnelle aux signaux déjà retenus par la politique à 10 parts. Elle vérifie la concordance du carnet d’entrée réobservé avec le coût et l’horodatage du fill initial, puis reprice chaque taille sur ce carnet et à quatre horizons de sortie. Le replay conserve le seuil de marge et le stress par part d’origine. Il distingue profondeur d’achat, profondeur de vente, marge insuffisante, taille sous le minimum et donnée inconnue. Les tailles sont des scénarios indépendants. Une capacité estimée sur ces entrées ne mesure pas les nouveaux signaux qu’une politique native à 5 ou 25 parts aurait pu déclencher.
+
 ```powershell
 node poly_markout.mjs --watch
 node poly_markout.mjs --export > data/polymarket-v2/markout.ndjson
@@ -73,7 +75,7 @@ python -B docs/render_edge_report.py outputs/VisualTrader-Rapport-Sorties.mp4 --
 2. Vérifier la continuité du carnet avec des snapshots REST indépendants et mesurer les dérives temporelles.
 3. Mesurer la vitesse, la RAM et l’espace disque sur des sessions complètes et aux heures d’activité élevée.
 4. Ajouter des archives brutes compressées, indexées et vérifiables pour les reprises de recherche au-delà de la rétention courante.
-5. Rejouer plusieurs tailles et les fills partiels. Mesurer séparément le coût d’une seconde jambe retardée.
+5. Tester les fills partiels et une taille décidée au signal. Mesurer séparément le coût d’une seconde jambe retardée.
 6. Confirmer sur plusieurs journées le markout et les coûts de sortie désormais publiés à quatre délais.
 7. Vérifier les asymétries Up/Down et court/long avec des fenêtres de confirmation et des corrections de tests multiples.
 8. Implémenter un modèle maker avec scénarios de file, rejets et annulations puis le comparer au taker.

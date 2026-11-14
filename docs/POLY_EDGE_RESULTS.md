@@ -30,6 +30,18 @@ L’impulsion mérite un bloc prospectif parce que l’exécution disparaît au-
 
 Chaque délai est un scénario indépendant pour la même entrée. La différence avec +4,50 USDC au règlement quantifie la part du résultat historique qui dépendait de conserver la position. Sur les deux entrées Skew rejouées à 250 ms, les quatre sorties alternatives totalisent entre −1,715 et −1,135 USDC selon le délai. L’échantillon exploratoire est trop petit pour choisir une règle de sortie. L’export `markout.ndjson` conserve cinq éléments par scénario pour l’audit. L’entrée simulée, le délai, l’état coté ou inconnu, la profondeur monétisable par le total des bids et le coût net avec stress.
 
+## Capacité sur l’impulsion historique
+
+| Taille | Sortie à 15 s après frais et stress |
+| ---: | ---: |
+| 5 parts | +0,484 USDC |
+| 10 parts | +0,889 USDC |
+| 25 parts | Marge insuffisante à l’achat |
+| 50 parts | Marge insuffisante à l’achat |
+| 100 parts | Marge insuffisante à l’achat |
+
+Le passage de 10 à 25 parts aurait franchi le seuil de coût alloué par le signal. Ces chiffres viennent du même fill historique et ne donnent pas une capacité habituelle de la stratégie.
+
 ## Exploitation
 
 - Le premier banc fige le consensus, le proxy d’ouverture et le diagnostic de paire sur le bloc du 14 novembre à 21 h 10 au 28 novembre à 21 h 10, heure de Paris.

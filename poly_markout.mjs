@@ -6,11 +6,13 @@ import {readFileSync} from 'node:fs';
 import {pathToFileURL} from 'node:url';
 import {parseArgs} from 'node:util';
 import {Books} from './poly_clob.mjs';
+import {quote} from './polymarket_paper.mjs';
 import {publishJson} from './json_status.mjs';
 
 const run = promisify(execFile);
 const horizons = [250,1000,5000,15000];
 const grace = 1000;
+const sizes = [5,10,25,50,100];
 
 export function bidProceeds(bids, shares, rate) {
   let remaining = shares, notional = 0, fees = 0;
@@ -27,13 +29,19 @@ export function bidProceeds(bids, shares, rate) {
   return null;
 }
 
-export function replayExits(market, frames, entries, shares, stressPerLeg) {
+export function replayExits(market, frames, entries, shares, stressPerLeg, edge) {
   const waiting = entries.flatMap(entry=>horizons.map(delay=>({
     entry,delay,target:entry.recv+delay,state:'unknown'
   }))).sort((a,b)=>a.target-b.target);
   if (!waiting.length) return [];
   const books = new Books(market);
-  const cutoff = waiting[0].entry.recv;
+  const cutoff = Math.min(...entries.map(entry=>entry.recv));
+  const fillsAt = new Map();
+  for (const entry of entries) {
+    if (!fillsAt.has(entry.recv)) fillsAt.set(entry.recv,[]);
+    fillsAt.get(entry.recv).push(entry);
+  }
+  const capacity = new Map();
   let head = 0, previous = 0;
   for (const frame of frames) {
     // The entry evidence was produced in an uninterrupted epoch. Leave later exits unknown.
@@ -48,6 +56,22 @@ export function replayExits(market, frames, entries, shares, stressPerLeg) {
     }
     const updated = new Set();
     for (const event of JSON.parse(frame.data)) for (const token of books.apply(event)) updated.add(token);
+    for (const entry of fillsAt.get(frame.recv)??[]) {
+      if (capacity.has(entry) || !Number.isFinite(entry.target) || !Number.isFinite(edge)) continue;
+      const token = market.tokens[entry.side];
+      if (!updated.has(token)) continue;
+      const raw = books.raw(token);
+      if (!raw || raw.timestamp!==entry.source) continue;
+      const reference = quote(raw,token,market.condition,shares,market.rate,frame.recv);
+      if (!reference || Math.abs(reference.total-entry.quote.total)>1e-8) continue;
+      capacity.set(entry,sizes.map(size=>{
+        if (size<market.minimum) return {size,state:'below-minimum'};
+        const buy = quote(raw,token,market.condition,size,market.rate,frame.recv);
+        if (!buy) return {size,state:'entry-depth'};
+        if (entry.target-buy.total/size-stressPerLeg<edge-1e-9) return {size,state:'entry-edge',cost:buy.total};
+        return {size,state:'entry-priced',cost:buy.total};
+      }));
+    }
     for (let i=head;i<waiting.length && waiting[i].target<=frame.recv;i++) {
       const item = waiting[i];
       if (item.state!=='unknown' || frame.recv>item.target+grace) continue;
@@ -59,6 +83,12 @@ export function replayExits(market, frames, entries, shares, stressPerLeg) {
       if (!valid) continue;
       const proceeds = bidProceeds(book.bids,shares,market.rate);
       const observed = {recv:frame.recv,source:book.timestamp,bid:valid.bestBid};
+      item.liquidity = capacity.get(item.entry)?.map(point=>{
+        if (point.state!=='entry-priced') return point;
+        const sale = bidProceeds(book.bids,point.size,market.rate);
+        return sale ? {...point,state:'priced',exitNet:sale.net,
+          stressedNet:sale.net-point.cost-2*stressPerLeg*point.size} : {...point,state:'exit-depth'};
+      });
       Object.assign(item,observed,proceeds ? {state:'priced',proceeds,
         net:proceeds.net-item.entry.quote.total,stressedNet:proceeds.net-item.entry.quote.total-2*stressPerLeg*shares} :
         {state:'insufficient-depth'});
@@ -67,7 +97,9 @@ export function replayExits(market, frames, entries, shares, stressPerLeg) {
     if (head===waiting.length) break;
   }
   return waiting.map(({entry,delay,target,state,...exit})=>({model:entry.model,latency:entry.latency,
-    side:entry.side,delay,target,state,entryRecv:entry.recv,entryCost:entry.quote.total,...exit}));
+    side:entry.side,delay,target,state,entryRecv:entry.recv,entryCost:entry.quote.total,
+    ...exit,liquidity:exit.liquidity ?? capacity.get(entry)?.map(point=>point.state==='entry-priced' ?
+      {...point,state:'exit-unknown'} : point) ?? null}));
 }
 
 export function flowEntries(row, policy) {
@@ -87,7 +119,7 @@ export function flowEntries(row, policy) {
     return row.observed.samples.flatMap(sample=>{
       const entry = sample.sides[side];
       return entry?.quote && probs[side]-cost(entry.quote)>=policy.directionalEdge ?
-        [{...entry,side,model,latency:sample.barrier-row.time}] : [];
+        [{...entry,side,model,target:probs[side],latency:sample.barrier-row.time}] : [];
     });
   });
 }
@@ -107,6 +139,19 @@ export function aggregate(rows) {
       mark.net+=exit.net;
       mark.stressedNet+=exit.stressedNet;
       mark.mean=mark.stressedNet/mark.priced;
+    }
+    mark.liquidity ??= Object.fromEntries(sizes.map(size=>[size,{priced:0,stressedNet:0,missing:0,rejections:{}}]));
+    for (const size of sizes) {
+      const stats = mark.liquidity[size];
+      const point = exit.liquidity?.find(x=>x.size===size);
+      if (point?.state==='priced') {
+        stats.priced++;
+        stats.stressedNet+=point.stressedNet;
+      } else if (!point || point.state==='exit-unknown') {
+        stats.missing++;
+      } else {
+        stats.rejections[point.state]=(stats.rejections[point.state]??0)+1;
+      }
     }
   }
   return stats;
@@ -138,7 +183,8 @@ async function main() {
   const db = new DatabaseSync(dir+'/markout.sqlite',{readOnly:!!args.export});
   if (args.export) {
     try {
-      for (const row of db.prepare('SELECT record FROM observations ORDER BY start').iterate()) {
+      const {protocol} = JSON.parse(readFileSync(dir+'/markout.json'));
+      for (const row of db.prepare('SELECT record FROM observations WHERE protocol=? ORDER BY start').iterate(protocol)) {
         process.stdout.write(row.record+'\n');
       }
     } finally {db.close();}
@@ -180,14 +226,15 @@ async function main() {
               for (const sample of row.observed.samples) {
                 const latency = sample.barrier-row.time;
                 const entry = sample.sides[side];
-                if (row.outcomes[model][latency].state==='fill') entries.push({...entry,model,side,latency});
+                if (row.outcomes[model][latency].state==='fill') entries.push({...entry,model,side,latency,
+                  target:row.plans[model].target});
               }
             }
             const deadline = entries.length ? Math.max(...entries.map(e=>e.recv))+horizons.at(-1)+grace : 0;
             if (deadline>=now || (tail<deadline && now-deadline<120_000)) continue;
             const meta = entries.length && market.get(row.slug);
             const exits = replayExits(meta ? JSON.parse(meta.info) : {ends:Infinity},
-              meta ? frames.iterate(row.slug,deadline) : [],entries,policy.shares,policy.stressPerLeg);
+              meta ? frames.iterate(row.slug,deadline) : [],entries,policy.shares,policy.stressPerLeg,policy.directionalEdge);
             const record = {protocol,start:row.start,slug:row.slug,
               phase:row.start<Date.parse(policy.flowStartUtc??'2026-11-14T20:20:00Z')?'prior':'after-cutoff',
               flowCovered:row.flow.acceleration!=null,exits};

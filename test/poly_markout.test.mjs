@@ -44,3 +44,19 @@ test('execution candidates apply the same per-leg threshold at signal and fill',
     {directionalEdge:.04,stressPerLeg:.005,shares:10});
   assert.deepEqual(candidates.map(x=>[x.model,x.latency]),[['impulse',250],['combined',250]]);
 });
+
+test('capacity uses exact entry snapshot, full bid depth and the original edge rule',()=>{
+  const buy = {...snapshot(2000,50),asks:[{price:.64,size:10},{price:.68,size:40}]};
+  const original = {...entry,source:2000,target:.731,quote:{total:6.56128}};
+  const exit = frame(2250,snapshot(2250,30));
+  const before = [frame(2000,buy),exit];
+  const result = replayExits(market,before,[original],10,.005,.04);
+  const points = result[0].liquidity;
+  assert.deepEqual(points.map(p=>p.state),['priced','priced','priced','entry-edge','entry-depth']);
+  assert.ok(points[1].stressedNet<0);
+  assert.equal(result[1].liquidity[1].state,'exit-unknown');
+  assert.equal(replayExits(market,before,[{...original,target:.8}],10,.005,.04)[0].liquidity[3].state,'exit-depth');
+  assert.equal(replayExits(market,before,[{...original,source:1999}],10,.005,.04)[0].liquidity,null);
+  const summary = aggregate([{phase:'prior',exits:result}]);
+  assert.equal(summary.prior[250].impulse[250].liquidity[50].rejections['entry-edge'],1);
+});

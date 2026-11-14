@@ -128,6 +128,8 @@ class Dashboard:
                                (185,80,80,100,112),4)
         self.exits = self.table('Sorties',('Signal','Entrée','Sortie','Cotées / fills','Inconnues','Trop minces','Net stressé'),
                                 (162,66,70,86,76,80,108),4)
+        self.capacity = self.table('Taille',('Signal · entrée · sortie','Parts','Cotées / fills','Motif principal','Net stressé'),
+                                   (245,62,104,140,108),4)
         self.journal.bind('<Double-1>',self.review_selected)
         self.live = ttk.Button(header,text='Revenir au direct',command=self.return_live)
         self.tabs.bind('<<NotebookTabChanged>>',lambda _: self.render_tables())
@@ -533,10 +535,14 @@ class Dashboard:
                                       f"{item['fills']} / {item['attempts']}",
                                       money(item['stressNet'],2) if item['fills'] else '—')))
         exits = []
+        capacities = []
+        reasons = {'entry-edge':'Marge insuffisante','entry-depth':'Achat trop mince',
+                   'exit-depth':'Vente trop mince','below-minimum':'Sous le minimum'}
         for phase, label in [('after-cutoff','Après le seuil'),('prior','Historique')]:
             grouped = self.markout_report.get('table',{}).get(phase,{})
             if grouped:
                 exits.append(('open',(label,'','','','','','')))
+                capacities.append(('open',(label,'','','','')))
             for latency, models in grouped.items():
                 for model, horizons in models.items():
                     for delay, item in horizons.items():
@@ -546,8 +552,18 @@ class Dashboard:
                         exits.append((tag,(name,latency+' ms',delay+' ms',f"{item['priced']} / {item['entries']}",
                                            item['unknown'],item['insufficient'],
                                            f'{net:+.3f} USDC' if item['priced'] else '—')))
+                        if delay!='15000':
+                            continue
+                        for size,point in item.get('liquidity',{}).items():
+                            issues = point['rejections'] | {'unknown':point['missing']}
+                            reason = max(issues,key=issues.get)
+                            capacities.append(('',(f'{name} · {latency} ms · 15 s',size,
+                                f"{point['priced']} / {item['entries']}",
+                                reasons.get(reason,'Données manquantes') if issues[reason] else '—',
+                                f"{point['stressedNet']:+.3f} USDC" if point['priced'] else '—')))
         for tree,rows in ((self.models,model_rows),(self.journal,trades),(self.decisions,decisions),
-                          (self.lab,lab),(self.cohorts,cohorts),(self.flow,flows),(self.exits,exits)):
+                          (self.lab,lab),(self.cohorts,cohorts),(self.flow,flows),(self.exits,exits),
+                          (self.capacity,capacities)):
             ids = tree.get_children()
             for i,(tag,row) in enumerate(rows):
                 if i < len(ids):

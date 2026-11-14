@@ -38,7 +38,12 @@ BASE = backdrop()
 
 
 def render(t, series, metadata):
-    scenes = (7,8,10,9,8,7) if metadata.get('exit_marks') else (7,8,10,9,7)
+    scenes = (7,8,10,9)
+    if metadata.get('exit_marks'):
+        scenes += (8,)
+    if metadata.get('capacity'):
+        scenes += (8,)
+    scenes += (7,)
     scene = 0
     while t>=scenes[scene] and scene<len(scenes)-1:
         t-=scenes[scene]
@@ -118,6 +123,17 @@ def render(t, series, metadata):
                  MUTED if value is None else MINT if value>=0 else RED,True)
         text(64,529,'Revente de 10 parts au bid, frais d’aller-retour et stress inclus.',23,MUTED)
         text(64,577,'Une seule entrée observée. Les sorties sont des scénarios alternatifs.',23,GOLD)
+    elif scene==5 and metadata.get('capacity'):
+        text(64,title_y,'Combien de parts ?',55,FG,True)
+        text(64,221,'Impulsion · même carnet d’entrée, revente après 15 s',24,MUTED)
+        for i,(size,value,status) in enumerate(metadata['capacity']):
+            x = 64+232*i
+            panel((x,315,x+216,471))
+            text(x+17,339,f'{size} parts',24,MUTED,True)
+            text(x+17,391,number(value*ease)+' USDC' if value is not None else status,22,
+                 GOLD if value is None else MINT if value>=0 else RED,True)
+        text(64,526,'Chaque taille est rejouée indépendamment avec la marge initiale.',23,MUTED)
+        text(64,572,'Un seul fill historique. La capacité varie avec le carnet.',23,GOLD)
     else:
         text(64,title_y,'Le prochain verdict',55,FG,True)
         text(64,226,'Collecte prospective · protocole figé',25,MUTED)
@@ -149,7 +165,14 @@ def main():
         marks = markout['table']['prior']['250']['impulse']
         meta['exit_marks'] = [(label,marks[key]['mean']) for key,label in
                               [('250','250 ms'),('1000','1 seconde'),('5000','5 secondes'),('15000','15 secondes')]]
-    duration = 49 if meta.get('exit_marks') else 41
+        last = marks['15000']
+        if last['entries']==1 and last.get('liquidity'):
+            statuses = {'entry-edge':'Marge trop basse','entry-depth':'Achat trop mince',
+                        'exit-depth':'Vente trop mince','below-minimum':'Sous le minimum'}
+            meta['capacity'] = [(size,row['stressedNet'] if row['priced'] else None,
+                                 statuses.get(next(iter(row['rejections']),''),'Donnée absente'))
+                                for size,row in last['liquidity'].items()]
+    duration = 41+8*bool(meta.get('exit_marks'))+8*bool(meta.get('capacity'))
     if args.preview:
         render(2,series,meta).save(args.preview)
     command = ['ffmpeg','-hide_banner','-loglevel','error','-y','-f','rawvideo','-pixel_format','rgb24',
