@@ -21,7 +21,8 @@ test('samples use both clocks and persistent pressure requires the same connecti
   assert.deepEqual(replayPressure(market,[...frames,snapshot(10000)],10000),{pressure:.8,persistence:.8});
   assert.deepEqual(replayPressure(market,[frames[0],{recv:6000,type:'reset'},frames[1]],10000),
     {pressure:.8,persistence:null});
-  assert.equal(replayPressure(market,[frames[0],snapshot(9900,10000)],10000),null);
+  assert.deepEqual(replayPressure(market,[frames[0],snapshot(9980,10010)],10000),{pressure:.8,persistence:.8});
+  assert.equal(replayPressure(market,[frames[0],snapshot(9900,10001)],10000),null);
 });
 
 test('isolated and combined scores are paired; missing execution stays unknown',()=>{
@@ -36,4 +37,8 @@ test('isolated and combined scores are paired; missing execution stays unknown',
   assert.equal(result.combined.status,'unknown');
   assert.equal(result.combined.stress,null);
   assert.ok(result.combined.brier<result.impulse.brier);
+  const options = {shares:10,stressPerLeg:.005,directionalEdge:.04};
+  const row = {time:1000,winner:0,observed};
+  const features = {pressure:.8,persistence:.8};
+  assert.deepEqual(results({features,impulse:1.4},row,options),results({features,impulse:1},row,options));
 });

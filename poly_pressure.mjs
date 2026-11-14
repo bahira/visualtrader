@@ -35,7 +35,8 @@ export function replayPressure(market, frames, cutoff) {
   function snapshot(t) {
     const values = market.tokens.map(token=>{
       const book = books.books.get(token);
-      if (!book || t-(seen.get(token)??0)>1000 || t-book.timestamp>1000 || book.timestamp>=t) return null;
+      const recv = seen.get(token)??0;
+      if (!book || t-recv>1000 || t-book.timestamp>1000 || book.timestamp>recv+100) return null;
       return nearTouch(book);
     });
     points.push(values.some(v=>v===null) ? null : {value:(values[0]-values[1])/2,epoch});
@@ -74,9 +75,10 @@ export function results(record, row, policy) {
   const observed = row.observed;
   const quotes = observed.initial.map(o=>o.quote);
   const base = quotes[0].average/(quotes[0].average+quotes[1].average);
+  const impulse = Math.max(-1,Math.min(1,record.impulse));
   return Object.fromEntries(observed.samples.map(sample=>{
     const values = {};
-    for (const [name,p] of Object.entries(signals(base,f.pressure,f.persistence,record.impulse))) {
+    for (const [name,p] of Object.entries(signals(base,f.pressure,f.persistence,impulse))) {
       const edge = q=>q.total/policy.shares+policy.stressPerLeg+policy.directionalEdge;
       const side = p-edge(quotes[0])>=1-p-edge(quotes[1]) ? 0 : 1;
       const prob = side===0 ? p : 1-p;
