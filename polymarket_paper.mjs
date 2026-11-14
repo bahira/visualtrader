@@ -123,9 +123,11 @@ async function main() {
   }
   let lastError = null, current = null, lastSettlement = 0, running = true;
   const names = ['anchor','momentum','skew','market'];
-  const findTrial = db.prepare('SELECT 1 FROM trials WHERE start=?');
-  const due = db.prepare('SELECT start,slug,condition FROM trials WHERE winner IS NULL AND start<=? ORDER BY start DESC LIMIT 20');
+  const findTrial = db.prepare('SELECT record FROM trials WHERE start=?');
+  const due = db.prepare('SELECT start,slug,condition FROM trials WHERE winner IS NULL AND start<=? ORDER BY start LIMIT 8');
   const settle = db.prepare('UPDATE trials SET winner=? WHERE start=? AND winner IS NULL');
+  const journal = db.prepare('SELECT start,slug,time,record,winner FROM trials ORDER BY start DESC LIMIT 24');
+  let preview = null, meta = null;
   const add = db.prepare('INSERT INTO trials(start,slug,condition,time,record) VALUES(?,?,?,?,?)');
   for (const sig of ['SIGINT','SIGTERM']) process.on(sig,()=>{running=false;});
   function status() {
@@ -154,7 +156,11 @@ async function main() {
     for (const result of Object.values(summary)) if (result.samples) result.brier /= result.samples;
     const temporary = resolve(dir,'status.tmp');
     writeFileSync(temporary,JSON.stringify({policy:POLICY,checked:new Date().toISOString(),
-      current,lastError,evaluated,resolved,summary},null,2));
+      current,lastError,evaluated,resolved,summary,
+      journal:journal.all().map(({record,winner,...row})=>{
+        const trial = JSON.parse(record);
+        return {...row,winner,prob:trial.prob,fills:trial.fills};
+      })},null,2));
     renameSync(temporary,resolve(dir,'status.json'));
   }
   async function run() {
@@ -171,17 +177,38 @@ async function main() {
         } catch (error) { lastError = String(error.message); }
       }
     }
-    if (findTrial.get(start)) { current.state='Décision enregistrée'; return; }
-    if (now-start < 120_000 || now-start >= 138_000) return;
-    const [raw,candles] = await Promise.all([get(GAMMA+slug),get(BINANCE)]);
-    const m = market(raw,start);
+    const saved = findTrial.get(start);
+    const inWindow = now-start >= 120_000 && now-start < 138_000;
+    const deciding = !saved && inWindow;
+    if (saved) {
+      const record = JSON.parse(saved.record);
+      current.state = Object.keys(record.fills).length ? 'Trade simulé enregistré' : 'Abstention enregistrée';
+      current.decision = record;
+    } else if (now-start >= 138_000) {
+      current.state = 'Fenêtre de décision passée';
+    }
+    if (preview?.slug === slug) Object.assign(current,preview.data);
+    if (!deciding && preview?.slug === slug && now-preview.time < 4000) return;
+    const refresh = deciding || meta?.slug !== slug || now-meta.time > 20_000 || !meta.market?.accepting;
+    const [raw,candles] = await Promise.all([refresh ? get(GAMMA+slug) : null,get(BINANCE)]);
+    if (raw) meta = {slug,time:Date.now(),market:market(raw,start)};
+    const m = meta?.market;
     const f = features(candles,start,Date.now());
-    if (!m?.accepting || !f) { current.state='Marché ou proxy BTC indisponible'; return; }
+    if (!m?.accepting || !f) {
+      if (deciding) current.state='Marché ou proxy BTC indisponible';
+      return;
+    }
     const initial = await books(m);
-    if (initial.time >= start+138_000 || !initial.quotes.every(Boolean)) { current.state='Carnet incomplet'; return; }
     const prob = estimate(f,(m.ends-initial.time)/1000);
     // Normalize two executable asks before fees as a simple market calibration benchmark.
-    prob.market = initial.quotes[0].average/(initial.quotes[0].average+initial.quotes[1].average);
+    const complete = initial.quotes.every(Boolean);
+    prob.market = complete
+      ? initial.quotes[0].average/(initial.quotes[0].average+initial.quotes[1].average) : null;
+    preview = {slug,time:initial.time,data:{features:f,prob,quotes:initial.quotes,
+      quoteTime:initial.time,ends:m.ends}};
+    Object.assign(current,preview.data);
+    if (!deciding || initial.time >= start+138_000) return;
+    if (!complete) { current.state='Carnet incomplet'; return; }
     const decisions = Object.fromEntries(names.slice(0,3).map(name=>[name,rules(prob[name],initial.quotes)]));
     let execution = null;
     if (Object.values(decisions).some(Boolean)) {
@@ -196,8 +223,8 @@ async function main() {
     }
     const record = {features:f,prob,initial,execution,fills,rate:m.rate};
     add.run(start,slug,m.condition,initial.time,JSON.stringify(record));
-    current = {slug,secondsToEnd:Math.ceil((m.ends-Date.now())/1000),
-      state:'Décision enregistrée',features:f,prob,orders:Object.keys(fills)};
+    Object.assign(current,{state:Object.keys(fills).length ? 'Trade simulé enregistré' : 'Abstention enregistrée',
+      decision:record});
   }
   try {
     while (running) {

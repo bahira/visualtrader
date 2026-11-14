@@ -19,3 +19,7 @@ node --test test/polymarket_paper.test.mjs
 - On garde SQLite et les snapshots exécutables normalisés localement. Le remplissage réel, le basis Binance/Chainlink et la calibration hors échantillon restent à vérifier. Une décision Ratée par indisponibilité du flux peut être exclue. Les performances citées dans la demande ne sont pas des résultats vérifiés de ce modèle.
 
 [Montant des frais](https://docs.polymarket.com/trading/fees) · [Carnet public](https://docs.polymarket.com/api-reference/market-data/get-order-book) · [Exemple de règles de règlement BTC 5 min](https://polymarket.com/event/btc-updown-5m-1789375800)
+
+## Fenêtre Windows en direct
+
+Lancer Polymarket.cmd pour afficher la fenêtre native dédiée. Le worker actualise les cotations publiques toutes les quelques secondes. Le compte à rebours est local et se met à jour chaque seconde. Les prix d'achat par part incluent les frais estimés pour 10 parts. Le journal distingue les positions avant échéance, le règlement en attente et le P&L officiel du portefeuille simulé. La courbe conserve les observations du marché courant depuis l'ouverture de la fenêtre.
