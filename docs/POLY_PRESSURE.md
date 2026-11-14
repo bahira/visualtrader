@@ -23,3 +23,17 @@ python -B docs/render_edge_report.py outputs/VisualTrader-Rapport-Pression.mp4 -
 ```
 
 L’audit initial a relevé des timestamps source jusqu’à 21 ms après la décision pour des trames déjà reçues avant elle. La tolérance a été corrigée avant l’ouverture du bloc prospectif. Le rapport affiche le nombre de marchés entièrement comparables à côté du score. Les carnets peuvent manquer à l’ancienne date, être trop anciens ou dépourvus d’un côté près d’une issue très probable.
+
+### Premier benchmark après correction
+
+Six marchés historiques entièrement comparables sur 23 réglés. Au délai de 500 ms, on observe les résultats suivants.
+
+| Variante | Brier | Fills | Net stressé |
+| --- | ---: | ---: | ---: |
+| Carnet | 0,14095 | 0 | 0 USDC |
+| Pression instantanée | 0,18340 | 2 | −5,62 USDC |
+| Pression persistante | 0,16533 | 2 | −5,62 USDC |
+| Impulsion | 0,13118 | 0 | 0 USDC |
+| Combinaison | 0,15400 | 1 | −3,04 USDC |
+
+L’impulsion améliore légèrement le score de prévision sur ce petit échantillon. Sa seule tentative à 500 ms est rejetée par le carnet post-latence. Les deux variantes de pression et leur combinaison déclenchent des achats simulés dont le résultat est négatif. L’évaluation prospective doit établir si ces écarts se reproduisent.
