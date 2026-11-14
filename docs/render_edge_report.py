@@ -35,11 +35,12 @@ def backdrop():
 
 
 BASE = backdrop()
+OPTIONAL_SCENES = ('exit_marks','capacity','pressure','robustness','thresholds')
 
 
 def render(t, series, metadata):
     scenes = (7,8,10,9)
-    optional = [name for name in ('exit_marks','capacity','pressure','robustness') if metadata.get(name)]
+    optional = [name for name in OPTIONAL_SCENES if metadata.get(name)]
     scenes += (8,)*len(optional)
     scenes += (7,)
     scene = 0
@@ -157,6 +158,20 @@ def render(t, series, metadata):
             text(x+21,344,label,20,MUTED,True)
             text(x+21,389,number(value*ease)+' USDC',39,MINT if value>=0 else RED,True)
         text(64,530,f'{fills} fills · {hours} blocs horaires · {days}/{minimum} jours pour la fourchette',25,GOLD)
+    elif current=='thresholds':
+        text(64,title_y,'La marge suffit-elle après les coûts ?',44,FG,True)
+        n,rows = metadata['thresholds']
+        text(64,221,f'Impulsion Binance · {n} marchés historiques appariés · entrée à 500 ms',24,MUTED)
+        panel((64,305,1216,544))
+        for x,label in ((90,'MARGE / STRESS'),(438,'FILLS SIMULÉS'),(688,'NET'),(927,'MÊMES FILLS +1¢')):
+            text(x,329,label,18,MUTED,True)
+        for i,(label,fills,net,extra) in enumerate(rows):
+            y = 375+48*i
+            text(90,y,label,22,FG,True)
+            text(438,y,str(fills),22,FG,True)
+            text(688,y,number(net)+' USDC' if fills else '—',22,MINT if fills and net>0 else MUTED,True)
+            text(927,y,number(extra)+' USDC' if fills else '—',22,FG if fills else MUTED,True)
+        text(64,587,'Le stress peut changer les ordres retenus. La dernière colonne garde les mêmes fills.',21,GOLD)
     else:
         text(64,title_y,'Le prochain verdict',55,FG,True)
         text(64,226,'Collecte prospective · protocole figé',25,MUTED)
@@ -211,7 +226,13 @@ def main():
         combined = report['analysis'].get('prior',{}).get('250',{}).get('combined')
         if combined and combined['netWithoutBest'] is not None:
             meta['robustness'] = tuple(combined[key] for key in ('markets','fills','net','netWithoutBest','hours','days'))+(report['minBlocks'],)
-    duration = 41+8*sum(bool(meta.get(key)) for key in ('exit_marks','capacity','pressure','robustness'))
+        grid = report.get('sweep',{}).get('prior',{})
+        keys = ('2/0.5','4/0.5','2/1.5')
+        if all(grid.get(key,{}).get('500',{}).get('impulse') for key in keys):
+            values = [grid[key]['500']['impulse'] for key in keys]
+            meta['thresholds'] = (values[0]['markets'],[(key.replace('/', ' ¢ / ').replace('.', ',')+' ¢',
+                row['fills'],row['net'],row['netFixedFillsExtraCent']) for key,row in zip(keys,values)])
+    duration = 41+8*sum(bool(meta.get(key)) for key in OPTIONAL_SCENES)
     if args.preview:
         render(2,series,meta).save(args.preview)
     command = ['ffmpeg','-hide_banner','-loglevel','error','-y','-f','rawvideo','-pixel_format','rgb24',

@@ -136,6 +136,8 @@ class Dashboard:
                                    (245,62,104,140,108),4)
         self.robustness = self.table('Robustesse',('Signal','Marchés','Net USDC','Sans meilleur fill','Δ Brier / IC par jour'),
                                      (200,76,89,116,176),4)
+        self.thresholds = self.table('Seuils',('Signal · latence','Marge','Stress','Fills / N','Net USDC','Fills fixes +1¢'),
+                                     (194,63,64,82,90,105),4)
         self.journal.bind('<Double-1>',self.review_selected)
         self.live = ttk.Button(header,text='Revenir au direct',command=self.return_live)
         self.tabs.bind('<<NotebookTabChanged>>',lambda _: self.render_tables())
@@ -572,6 +574,7 @@ class Dashboard:
                                       f"{item['fills']} / {attempts}",
                                       money(item['net'],2) if item['fills'] else '—')))
         robustness = []
+        thresholds = []
         if self.audit_report.get('protocol')==self.pressure_report.get('protocol'):
             for phase,label in [('forward','Prospectif'),('prior','Historique'),('retrospective','Rétrospectif')]:
                 for latency,models in self.audit_report.get('analysis',{}).get(phase,{}).items():
@@ -584,6 +587,22 @@ class Dashboard:
                         tag = 'open' if not band else ''
                         robustness.append((tag,(pressure_names[name],item['markets'],money(item['net'],2),
                                                  money(no_best,2),brier)))
+            for phase,label in [('forward','Prospectif'),('prior','Historique'),('retrospective','Rétrospectif')]:
+                scenarios = self.audit_report.get('sweep',{}).get(phase,{})
+                if not scenarios:
+                    continue
+                thresholds.append(('open',(label,'','','','','')))
+                for delay in ('250','500','1000'):
+                    for key,by_latency in scenarios.items():
+                        margin,stress = key.replace('.',',').split('/')
+                        for name in ('impulse','combined','depth','persistentDepth'):
+                            item = by_latency.get(delay,{}).get(name)
+                            if not item:
+                                continue
+                            usable = item['fills'] > 0
+                            thresholds.append(('',(f'{pressure_names[name]} · {delay} ms',margin+' ¢',stress+' ¢',
+                                                   f"{item['fills']} / {item['markets']}",money(item['net'],2) if usable else '—',
+                                                   money(item['netFixedFillsExtraCent'],2) if usable else '—')))
         exits = []
         capacities = []
         reasons = {'entry-edge':'Marge insuffisante','entry-depth':'Achat trop mince',
@@ -613,7 +632,7 @@ class Dashboard:
                                 f"{point['stressedNet']:+.3f} USDC" if point['priced'] else '—')))
         for tree,rows in ((self.models,model_rows),(self.journal,trades),(self.decisions,decisions),
                           (self.lab,lab),(self.cohorts,cohorts),(self.flow,flows),(self.exits,exits),
-                          (self.capacity,capacities),(self.robustness,robustness)):
+                          (self.capacity,capacities),(self.robustness,robustness),(self.thresholds,thresholds)):
             ids = tree.get_children()
             for i,(tag,row) in enumerate(rows):
                 if i < len(ids):
