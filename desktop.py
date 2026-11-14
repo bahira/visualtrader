@@ -73,6 +73,10 @@ class Desktop:
             self.phoenix_backtest = json.loads(archive.read_text(encoding='utf8'))
         except (OSError, ValueError):
             self.phoenix_backtest = None
+        try:
+            self.phoenix_research = json.loads(archive.with_name('phoenix-research.json').read_text(encoding='utf8'))
+        except (OSError, ValueError):
+            self.phoenix_research = None
         self.connected = False
         self.view = '1 s'
         self.chart_key = None
@@ -189,6 +193,8 @@ class Desktop:
                                     ('Frais', 75), ('Latence', 77), ('Net cycle', 82), ('Motif', 170)])
         self.table('Phoenix', [('Indicateur', 235), ('Cadence', 180), ('Filtre Phoenix', 200)])
         self.table('Archive 4 h', [('Indicateur', 240), ('Freqtrade · futures', 400)])
+        self.table('Étude 4 h', [('Variante', 175), ('2025–26 net', 113), ('Stress net', 100),
+                                 ('Drawdown', 112), ('Cycles', 80)])
         self.tabs.bind('<<NotebookTabChanged>>', self.tab_changed)
         bottom = ttk.Frame(frame)
         bottom.grid(row=4, column=0, sticky='ew', pady=(6, 0))
@@ -446,6 +452,18 @@ class Desktop:
                     ('Biais du filtre spot', '—', {'long':'Haussier','short':'Baissier'}.get(phoenix['bias'],'En attente')),
                     ('Signaux haussiers / baissiers', '—', f"{phoenix['signals']['long']} / {phoenix['signals']['short']}"),
                 ]]
+        elif name == 'Étude 4 h':
+            rows = []
+            if self.phoenix_research:
+                for label, item in self.phoenix_research['results'].items():
+                    base, stress, rules = item['holdout'], item['stress'], item['rules']
+                    tag = 'up' if base['returnPct'] > 0 else 'down'
+                    nameplate = f"{label} · {rules['leverage']}× · {money(rules['trail']*100,2)} %"
+                    rows.append((tag, nameplate, money(base['returnPct']) + ' %',
+                                 money(stress['returnPct']) + ' %', money(base['maxDrawdownPct']) + ' %',
+                                 base['trades']))
+                if not self.phoenix_research.get('candidatePassedSelection',False):
+                    rows.insert(0,('down','Cash · référence','0,00 %','0,00 %','0,00 %',0))
         elif name == 'Archive 4 h':
             backtest = self.phoenix_backtest
             rows = []

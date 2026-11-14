@@ -60,3 +60,5 @@ Voir [l’architecture et le modèle](docs/ARCHITECTURE.md) pour les équations,
 ## ERRF Phoenix
 
 Les onglets **Phoenix** et **Archive 4 h** donnent le comparatif spot et le backtest futures importé. Voir [l’intégration et le replay](docs/PHOENIX.md).
+
+L’onglet **Étude 4 h** présente le [replay indépendant des règles Pine et le test de robustesse](docs/PHOENIX_RESEARCH.md).
