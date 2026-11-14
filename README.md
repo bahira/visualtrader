@@ -70,3 +70,5 @@ Le [banc de replay HFT](docs/MICROSTRUCTURE.md) compare le carnet, le flux exéc
 Le [replay de cotation simultanée](docs/TWO_SIDED.md) compare le résultat à un inventaire passif et documente le collecteur de données différentielles.
 
 Le [carnet différentiel reconstruit](docs/DEPTH_REPLAY.md) permet de rejouer les réglages figés sur de nouvelles captures.
+
+La [campagne paper multi-journées](docs/PAPER_CAMPAIGN.md) fige les réglages et agrège les nouveaux blocs hors échantillon.
