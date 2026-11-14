@@ -19,6 +19,17 @@ Sur trois marchés historiques appariés dont le carnet et le flux Binance sont 
 
 L’impulsion mérite un bloc prospectif parce que l’exécution disparaît au-delà de 250 ms sur cet exemple. La combinaison des deux indicateurs a moins bien classé les trois résultats que l’impulsion seule et n’a déclenché aucun fill. Le résultat dépend d’un seul fill. Le journal de cohorte plus large inclut des marchés sans carnet CLOB complet et sert à l’analyse descriptive du flux.
 
+## Revente au carnet sur le même fill
+
+| Délai après le fill | P&L stressé de l’aller-retour | Sorties cotées |
+| --- | ---: | ---: |
+| 250 ms | +0,176 USDC | 1 / 1 |
+| 1 s | +0,176 USDC | 1 / 1 |
+| 5 s | +0,099 USDC | 1 / 1 |
+| 15 s | +0,889 USDC | 1 / 1 |
+
+Chaque délai est un scénario indépendant pour la même entrée. La différence avec +4,50 USDC au règlement quantifie la part du résultat historique qui dépendait de conserver la position. Sur les deux entrées Skew rejouées à 250 ms, les quatre sorties alternatives totalisent entre −1,715 et −1,135 USDC selon le délai. L’échantillon exploratoire est trop petit pour choisir une règle de sortie. L’export `markout.ndjson` conserve cinq éléments par scénario pour l’audit. L’entrée simulée, le délai, l’état coté ou inconnu, la profondeur monétisable par le total des bids et le coût net avec stress.
+
 ## Exploitation
 
 - Le premier banc fige le consensus, le proxy d’ouverture et le diagnostic de paire sur le bloc du 14 novembre à 21 h 10 au 28 novembre à 21 h 10, heure de Paris.

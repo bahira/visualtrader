@@ -38,7 +38,7 @@ BASE = backdrop()
 
 
 def render(t, series, metadata):
-    scenes = (7,8,10,9,7)
+    scenes = (7,8,10,9,8,7) if metadata.get('exit_marks') else (7,8,10,9,7)
     scene = 0
     while t>=scenes[scene] and scene<len(scenes)-1:
         t-=scenes[scene]
@@ -60,7 +60,7 @@ def render(t, series, metadata):
     d.line((64,658,1216,658),fill='#3c4d61',width=2)
     d.line((64,658,64+int((scene+local)*1152/len(scenes)),658),fill=MINT,width=3)
     text(64,674,metadata['stamp'],17,MUTED)
-    text(1125,672,f'{scene+1:02d} / 05',18,MUTED,True)
+    text(1125,672,f'{scene+1:02d} / {len(scenes):02d}',18,MUTED,True)
 
     if scene==0:
         text(64,title_y,'Combien ça rapporte ?',57,FG,True)
@@ -107,6 +107,17 @@ def render(t, series, metadata):
             text(x+20,y+58,title,35,FG,True)
             text(x+20,y+125,a,22,MUTED)
             text(x+20,y+163,b,22,MUTED)
+    elif scene==4 and metadata.get('exit_marks'):
+        text(64,title_y,'Et si on revend ?',55,FG,True)
+        text(64,221,'Même fill Impulsion · entrée simulée à 250 ms',24,MUTED)
+        for i,(label,value) in enumerate(metadata['exit_marks']):
+            x = 64+290*i
+            panel((x,315,x+270,465))
+            text(x+19,338,label,25,MUTED,True)
+            text(x+19,388,'—' if value is None else number(value*ease)+' USDC',32,
+                 MUTED if value is None else MINT if value>=0 else RED,True)
+        text(64,529,'Revente de 10 parts au bid, frais d’aller-retour et stress inclus.',23,MUTED)
+        text(64,577,'Une seule entrée observée. Les sorties sont des scénarios alternatifs.',23,GOLD)
     else:
         text(64,title_y,'Le prochain verdict',55,FG,True)
         text(64,226,'Collecte prospective · protocole figé',25,MUTED)
@@ -122,6 +133,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output',type=Path)
     parser.add_argument('--preview',type=Path)
+    parser.add_argument('--markout',type=Path)
     args = parser.parse_args()
     status = json.loads(Path('data/polymarket-v2/status.json').read_text(encoding='utf8'))
     result = json.loads(Path('data/polymarket-v2/spot-benchmark.json').read_text(encoding='utf-8-sig'))
@@ -132,17 +144,23 @@ def main():
             'net':status['summary']['skew']['net']/1.1052, 'fills':status['summary']['skew']['settled'],
             'markets':status['resolved'],'book':status['summary']['market']['brier'],
             'sample':old['500']['impulse']['markets']}
+    if args.markout:
+        markout = json.loads(args.markout.read_text(encoding='utf8'))
+        marks = markout['table']['prior']['250']['impulse']
+        meta['exit_marks'] = [(label,marks[key]['mean']) for key,label in
+                              [('250','250 ms'),('1000','1 seconde'),('5000','5 secondes'),('15000','15 secondes')]]
+    duration = 49 if meta.get('exit_marks') else 41
     if args.preview:
         render(2,series,meta).save(args.preview)
     command = ['ffmpeg','-hide_banner','-loglevel','error','-y','-f','rawvideo','-pixel_format','rgb24',
                '-video_size',f'{W}x{H}','-framerate',str(FPS),'-i','-',
                '-f','lavfi','-i','sine=frequency=110:sample_rate=48000',
-               '-af','volume=0.14,tremolo=f=3:d=0.65,afade=t=in:st=0:d=2,afade=t=out:st=37:d=4',
+               '-af',f'volume=0.14,tremolo=f=3:d=0.65,afade=t=in:st=0:d=2,afade=t=out:st={duration-4}:d=4',
                '-shortest','-c:v','libx264','-preset','fast','-crf','20','-pix_fmt','yuv420p',
                '-c:a','aac','-b:a','96k','-movflags','+faststart',str(args.output)]
     with subprocess.Popen(command,stdin=subprocess.PIPE) as encoder:
         with encoder.stdin:
-            for f in range(41*FPS):
+            for f in range(duration*FPS):
                 encoder.stdin.write(render(f/FPS,series,meta).tobytes())
         if encoder.wait():
             raise SystemExit('FFmpeg encoding failed')

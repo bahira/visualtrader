@@ -44,6 +44,8 @@ class Dashboard:
         self.edge_modified = None
         self.flow_report = {}
         self.flow_modified = None
+        self.markout_report = {}
+        self.markout_modified = None
         self.reference = REFERENCE
         self.fx_attempt = None
         self.simple = True
@@ -124,6 +126,8 @@ class Dashboard:
                                   (380,100,76,100),4)
         self.flow = self.table('Flux Binance',('Signal','Marchés','Brier','Fills / essais','Net stressé'),
                                (185,80,80,100,112),4)
+        self.exits = self.table('Sorties',('Signal','Entrée','Sortie','Cotées / fills','Inconnues','Trop minces','Net stressé'),
+                                (162,66,70,86,76,80,108),4)
         self.journal.bind('<Double-1>',self.review_selected)
         self.live = ttk.Button(header,text='Revenir au direct',command=self.return_live)
         self.tabs.bind('<<NotebookTabChanged>>',lambda _: self.render_tables())
@@ -222,6 +226,14 @@ class Dashboard:
             if stamp != self.edge_modified:
                 self.edge_report = json.loads(source.read_text(encoding='utf8'))
                 self.edge_modified = stamp
+        except (OSError, ValueError):
+            pass
+        source = self.path.with_name('markout.json')
+        try:
+            stamp = source.stat().st_mtime_ns
+            if stamp != self.markout_modified:
+                self.markout_report = json.loads(source.read_text(encoding='utf8'))
+                self.markout_modified = stamp
         except (OSError, ValueError):
             pass
         source = self.path.with_name('spot-benchmark.json')
@@ -520,8 +532,22 @@ class Dashboard:
                     flows.append(('',(names[model],item['markets'],money(item['brier'],3),
                                       f"{item['fills']} / {item['attempts']}",
                                       money(item['stressNet'],2) if item['fills'] else '—')))
+        exits = []
+        for phase, label in [('after-cutoff','Après le seuil'),('prior','Historique')]:
+            grouped = self.markout_report.get('table',{}).get(phase,{})
+            if grouped:
+                exits.append(('open',(label,'','','','','','')))
+            for latency, models in grouped.items():
+                for model, horizons in models.items():
+                    for delay, item in horizons.items():
+                        name = names.get(model,EDGE_NAMES.get(model,model))
+                        net = item['stressedNet']
+                        tag = 'open' if item['priced']<item['entries'] else 'win' if net>0 else 'loss' if net<0 else ''
+                        exits.append((tag,(name,latency+' ms',delay+' ms',f"{item['priced']} / {item['entries']}",
+                                           item['unknown'],item['insufficient'],
+                                           f'{net:+.3f} USDC' if item['priced'] else '—')))
         for tree,rows in ((self.models,model_rows),(self.journal,trades),(self.decisions,decisions),
-                          (self.lab,lab),(self.cohorts,cohorts),(self.flow,flows)):
+                          (self.lab,lab),(self.cohorts,cohorts),(self.flow,flows),(self.exits,exits)):
             ids = tree.get_children()
             for i,(tag,row) in enumerate(rows):
                 if i < len(ids):

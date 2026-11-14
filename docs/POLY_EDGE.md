@@ -42,6 +42,18 @@ La vue simplifiée convertit le P&L en euros au taux indicatif USD/EUR de la BCE
 python -B docs/render_edge_report.py outputs/VisualTrader-Rapport.mp4 --preview outputs/VisualTrader-Apercu.png
 ```
 
+## Sortie avant règlement
+
+L’onglet **Sorties** montre le markout exécutable de la position après 250 ms, 1 s, 5 s et 15 s, à partir de la réception du fill d’entrée simulé. Chaque horizon représente une revente alternative de la position entière. Le replay balaie les bids du premier état complet qui dépasse le délai en temps source et en réception, avec une seconde de grâce. Il retranche les frais des deux jambes et ajoute le stress de la politique à chaque jambe. Un carnet trop mince vaut manque de profondeur. Une coupure ou un carnet absent vaut inconnue. Les moyennes et le net cumulé portent uniquement sur les sorties cotées et gardent leur dénominateur. La sortie est contrefactuelle et le carnet historique ne reflète pas la consommation de profondeur par notre ordre d’entrée.
+
+Le worker reprend les entrées prouvées dans l’export du banc et enregistre les observations compactes avant rotation du CLOB. Il calcule des scénarios descriptifs de sortie, sans changer les règles figées du bloc prospectif. Le benchmark distingue les marchés antérieurs et postérieurs au seuil de l’expérience de flux.
+
+```powershell
+node poly_markout.mjs --watch
+node poly_markout.mjs --export > data/polymarket-v2/markout.ndjson
+python -B docs/render_edge_report.py outputs/VisualTrader-Rapport-Sorties.mp4 --markout data/polymarket-v2/markout.json
+```
+
 ## 10 indispensables
 
 1. **Frais et coût exécutable** ✓ Calcul par niveau et stress de 0,5 cent supplémentaire par part et par jambe.
@@ -62,7 +74,7 @@ python -B docs/render_edge_report.py outputs/VisualTrader-Rapport.mp4 --preview 
 3. Mesurer la vitesse, la RAM et l’espace disque sur des sessions complètes et aux heures d’activité élevée.
 4. Ajouter des archives brutes compressées, indexées et vérifiables pour les reprises de recherche au-delà de la rétention courante.
 5. Rejouer plusieurs tailles et les fills partiels. Mesurer séparément le coût d’une seconde jambe retardée.
-6. Suivre le markout et le coût de sortie à plusieurs délais.
+6. Confirmer sur plusieurs journées le markout et les coûts de sortie désormais publiés à quatre délais.
 7. Vérifier les asymétries Up/Down et court/long avec des fenêtres de confirmation et des corrections de tests multiples.
 8. Implémenter un modèle maker avec scénarios de file, rejets et annulations puis le comparer au taker.
 9. Extraire un adaptateur générique pour d’autres contrats et pour les données Binance spot. Mesurer leur transférabilité sur des dates appariées.
