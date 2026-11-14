@@ -72,3 +72,5 @@ Le [replay de cotation simultanée](docs/TWO_SIDED.md) compare le résultat à u
 Le [carnet différentiel reconstruit](docs/DEPTH_REPLAY.md) permet de rejouer les réglages figés sur de nouvelles captures.
 
 La [campagne paper multi-journées](docs/PAPER_CAMPAIGN.md) fige les réglages et agrège les nouveaux blocs hors échantillon.
+
+Le [mode paper Polymarket BTC Up/Down](docs/POLYMARKET.md) teste le momentum et la semivariance dans un worker indépendant.

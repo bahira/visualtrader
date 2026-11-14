@@ -195,6 +195,8 @@ class Desktop:
         self.table('Archive 4 h', [('Indicateur', 240), ('Freqtrade · futures', 400)])
         self.table('Étude 4 h', [('Variante', 175), ('2025–26 net', 113), ('Stress net', 100),
                                  ('Drawdown', 112), ('Cycles', 80)])
+        self.table('Poly BTC', [('Modèle', 185), ('Tr. / réglés', 110), ('Gains', 70),
+                                ('Frais USD', 85), ('Net USD', 85), ('Brier', 75)])
         self.tabs.bind('<<NotebookTabChanged>>', self.tab_changed)
         bottom = ttk.Frame(frame)
         bottom.grid(row=4, column=0, sticky='ew', pady=(6, 0))
@@ -327,6 +329,8 @@ class Desktop:
                 self.label.configure(text='●  RUNTIME INDISPONIBLE', foreground=DOWN)
                 self.runtime.configure(text='Reconnexion au moteur local…', foreground=MUTED)
                 self.draw_depth(force=True)
+                if self.tabs.select() and self.tabs.tab(self.tabs.select(), 'text') == 'Poly BTC':
+                    self.update_table()
                 self.pause.state(['disabled'])
             finally:
                 self.future = None
@@ -391,11 +395,15 @@ class Desktop:
         self.update_table()
 
     def update_table(self):
-        if not self.state or not self.tabs.select():
+        if not self.tabs.select():
             return
         s = self.state
         name = self.tabs.tab(self.tabs.select(), 'text')
-        if name == 'Transactions':
+        if name == 'Poly BTC':
+            rows = self.polymarket_rows()
+        elif not s:
+            return
+        elif name == 'Transactions':
             rows = [('down' if t['sell'] else 'up', clock(t['t']), 'Vente' if t['sell'] else 'Achat',
                      money(t['price']), money(t['size'], 6)) for t in s['tape']]
         elif name in ('Exécutions', 'Fills rapides'):
@@ -499,6 +507,27 @@ class Desktop:
                 table.insert('', 'end', tags=tags, values=values)
         if len(children) > len(rows):
             table.delete(*children[len(rows):])
+
+    def polymarket_rows(self):
+        path = Path(__file__).resolve().parent / 'data' / 'polymarket' / 'status.json'
+        try:
+            state = json.loads(path.read_text(encoding='utf8'))
+        except (OSError, ValueError):
+            return [('', 'Worker paper indisponible', '—', '—', '—', '—', '—')]
+        age = (datetime.now().astimezone() -
+               datetime.fromisoformat(state['checked'].replace('Z','+00:00'))).total_seconds()
+        status = state['current']['state'] if age < 30 else 'Dernier rapport en cache'
+        market = state['current']['slug'].removeprefix('btc-updown-5m-')
+        rows = [('', f"BTC 5 min · {clock(int(market)*1000)}", f"{state['resolved']}/{state['evaluated']}",
+                 '—', '—', '—', '—')]
+        for key, label in [('anchor','Proxy BTC'),('momentum','+ Momentum'),('skew','+ Semivariance'),
+                           ('market','Carnet · benchmark')]:
+            item = state['summary'][key]
+            rows.append(('up' if item['net'] > 0 else 'down' if item['net'] < 0 else '',
+                         label,f"{item['trades']} / {item['settled']}",item['wins'],
+                         money(item['fees'],4),money(item['net'],4),money(item['brier'],4)))
+        rows.append(('', status, '—', '—', '—', '—', '—'))
+        return rows
 
     def draw_depth(self, force=False):
         book = self.state['book'] if self.connected else None
