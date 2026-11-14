@@ -44,6 +44,8 @@ class Dashboard:
         self.edge_modified = None
         self.flow_report = {}
         self.flow_modified = None
+        self.pressure_report = {}
+        self.pressure_modified = None
         self.markout_report = {}
         self.markout_modified = None
         self.reference = REFERENCE
@@ -244,6 +246,14 @@ class Dashboard:
             if stamp != self.flow_modified:
                 self.flow_report = json.loads(source.read_text(encoding='utf-8-sig'))
                 self.flow_modified = stamp
+        except (OSError, ValueError):
+            pass
+        source = self.path.with_name('pressure.json')
+        try:
+            stamp = source.stat().st_mtime_ns
+            if stamp != self.pressure_modified:
+                self.pressure_report = json.loads(source.read_text(encoding='utf8'))
+                self.pressure_modified = stamp
         except (OSError, ValueError):
             pass
         report = self.edge_report
@@ -534,6 +544,21 @@ class Dashboard:
                     flows.append(('',(names[model],item['markets'],money(item['brier'],3),
                                       f"{item['fills']} / {item['attempts']}",
                                       money(item['stressNet'],2) if item['fills'] else '—')))
+        pressure_names = {'book':'Carnet seul','depth':'Pression du carnet',
+                          'persistentDepth':'Pression sur deux points','impulse':'Impulsion Binance',
+                          'combined':'Pression + impulsion'}
+        pressure = self.pressure_report.get('sessions',{})
+        for phase,label in [('forward','Pression · prospectif'),('prior','Pression · historique'),
+                            ('retrospective','Pression · rétrospectif')]:
+            for delay in ('250','500','1000'):
+                models = pressure.get(phase,{}).get(delay,{})
+                if models:
+                    flows.append(('open',(f'{label} · {delay} ms','','','','')))
+                for key,item in models.items():
+                    attempts = item['fills']+item['rejected']+item['unknown']
+                    flows.append(('',(pressure_names[key],item['n'],money(item['brier'],5),
+                                      f"{item['fills']} / {attempts}",
+                                      money(item['net'],2) if item['fills'] else '—')))
         exits = []
         capacities = []
         reasons = {'entry-edge':'Marge insuffisante','entry-depth':'Achat trop mince',

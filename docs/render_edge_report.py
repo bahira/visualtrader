@@ -43,6 +43,8 @@ def render(t, series, metadata):
         scenes += (8,)
     if metadata.get('capacity'):
         scenes += (8,)
+    if metadata.get('pressure'):
+        scenes += (8,)
     scenes += (7,)
     scene = 0
     while t>=scenes[scene] and scene<len(scenes)-1:
@@ -134,6 +136,19 @@ def render(t, series, metadata):
                  GOLD if value is None else MINT if value>=0 else RED,True)
         text(64,526,'Chaque taille est rejouée indépendamment avec la marge initiale.',23,MUTED)
         text(64,572,'Un seul fill historique. La capacité varie avec le carnet.',23,GOLD)
+    elif scene==len(scenes)-2 and metadata.get('pressure'):
+        text(64,title_y,'Le carnet ajoute-t-il un signal ?',48,FG,True)
+        n, total, fills, rows = metadata['pressure']
+        text(64,221,f'{n} marchés comparables sur {total} · Brier à 500 ms · plus bas = mieux',24,MUTED)
+        largest = max(value for _,value in rows) or 1
+        best = min(value for _,value in rows)
+        for i,(label,value) in enumerate(rows):
+            y = 293+55*i
+            text(64,y,label,23,FG,True)
+            color = MINT if value==best else GOLD
+            d.rounded_rectangle((405,y+8,410+int(535*value/largest*ease),y+26),radius=5,fill=color)
+            text(979,y,f'{value:.5f}'.replace('.',','),23,color,True)
+        text(64,601,f'{fills} fill(s) au total sur les cinq variantes à 500 ms.',22,MUTED)
     else:
         text(64,title_y,'Le prochain verdict',55,FG,True)
         text(64,226,'Collecte prospective · protocole figé',25,MUTED)
@@ -150,6 +165,7 @@ def main():
     parser.add_argument('output',type=Path)
     parser.add_argument('--preview',type=Path)
     parser.add_argument('--markout',type=Path)
+    parser.add_argument('--pressure',type=Path)
     args = parser.parse_args()
     status = json.loads(Path('data/polymarket-v2/status.json').read_text(encoding='utf8'))
     result = json.loads(Path('data/polymarket-v2/spot-benchmark.json').read_text(encoding='utf-8-sig'))
@@ -172,7 +188,16 @@ def main():
             meta['capacity'] = [(size,row['stressedNet'] if row['priced'] else None,
                                  statuses.get(next(iter(row['rejections']),''),'Donnée absente'))
                                 for size,row in last['liquidity'].items()]
-    duration = 41+8*bool(meta.get('exit_marks'))+8*bool(meta.get('capacity'))
+    if args.pressure:
+        report = json.loads(args.pressure.read_text(encoding='utf8'))
+        measured = report['sessions']['prior'].get('500')
+        if measured:
+            labels = {'book':'Carnet seul','depth':'Pression instantanée','persistentDepth':'Pression à deux dates',
+                      'impulse':'Impulsion Binance','combined':'Pression + impulsion'}
+            meta['pressure'] = (report['comparable']['prior'],report['eligible']['prior'],
+                                sum(m['fills'] for m in measured.values()),
+                                [(name,measured[key]['brier']) for key,name in labels.items()])
+    duration = 41+8*sum(bool(meta.get(key)) for key in ('exit_marks','capacity','pressure'))
     if args.preview:
         render(2,series,meta).save(args.preview)
     command = ['ffmpeg','-hide_banner','-loglevel','error','-y','-f','rawvideo','-pixel_format','rgb24',

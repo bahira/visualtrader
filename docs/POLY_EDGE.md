@@ -30,6 +30,8 @@ Le croisement exploratoire avec Binance Spot ajoute le déséquilibre du volume 
 
 Le benchmark recompute quatre probabilités sur les mêmes marchés. Carnet seul, déséquilibre 30 s, impulsion (déséquilibre 10 s moins 30 s), et addition des deux corrections au logit du carnet. Il mesure Brier, tentatives, inconnues, fills et P&L stressé sur le même replay. Le worker renouvelle son rapport toutes les cinq minutes avec une empreinte propre et un début prospectif distinct, le 14 novembre à 21 h 20 heure de Paris. Il conserve les résultats exploratoires antérieurs dans `prior`. Ce benchmark ne qualifie ni n’active de stratégie.
 
+Le [benchmark de pression du carnet](POLY_PRESSURE.md) ajoute la profondeur instantanée et persistante, testées isolément et avec l’impulsion Binance sur des marchés appariés.
+
 ```powershell
 node poly_edge.mjs --export | python -B poly_spot_join.py
 node poly_edge.mjs --export | python -B poly_spot_join.py --rows > data/polymarket-v2/spot-joined.ndjson
