@@ -14,7 +14,7 @@ npm.cmd start
 
 Puis lancer [VisualTrader.cmd](VisualTrader.cmd), ou exécuter `python desktop.py` dans un autre terminal. Le client utilise les contrôles natifs Tk et un tracé Canvas Tk. La connexion au moteur reste locale. À la fermeture du client, le moteur continue la capture et le paper trading.
 
-**Time** affiche jusqu’à environ 16 heures de clôtures à la minute, avec volumes et prolongation live. **1 s** affiche les bougies OHLCV. **Capital** montre le capital liquidable simulé en USDT. Les onglets donnent le carnet, les transactions, les exécutions, l’optimiseur, les statistiques et les décisions. Lancer `VisualTrader.cmd --port 8788` pour voir la démo de l’exemple ci-dessous.
+**Time** affiche jusqu’à environ 16 heures de clôtures à la minute, avec volumes et prolongation live. **1 s** affiche les bougies OHLCV. Survolez le tracé pour inspecter un point et utilisez la molette ou le menu de durée pour changer l’échelle. Les raccourcis Ctrl+1, Ctrl+2 et Ctrl+3 changent de vue. **Capital** montre le capital liquidable simulé en USDT. Les onglets donnent le carnet, les transactions, les exécutions, l’optimiseur, les statistiques et les décisions. Lancer `VisualTrader.cmd --port 8788` pour voir la démo de l’exemple ci-dessous.
 
 Le bouton **Pause entrées** suspend les nouveaux achats du portefeuille actif. Les sorties continuent. Sur un flux continu, il faut 99 bougies pour les indicateurs, puis deux fenêtres de 15 min pour la première activation possible. Le portefeuille reste en cash jusqu’à validation. Même avec un flux sain, le moteur peut rester en cash indéfiniment.
 

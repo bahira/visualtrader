@@ -1,15 +1,20 @@
 """VisualTrader's native desktop client. Requires Python 3.10+ and Tk."""
 import argparse
+import sys
+from bisect import bisect_left
 from datetime import datetime
 import json
 from pathlib import Path
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, font, messagebox, ttk
 from concurrent.futures import ThreadPoolExecutor
 from urllib.request import build_opener, ProxyHandler, Request
 
-BG, PANEL, GRID = '#111515', '#182020', '#303b39'
-FG, MUTED, UP, DOWN, GOLD = '#eef5f2', '#a8b6b1', '#73e8bd', '#ffa3a0', '#e9ce78'
+BG, PANEL, GRID = '#101721', '#151f2c', '#29374a'
+FG, MUTED, UP, DOWN, GOLD = '#f0f4fa', '#acbbcf', '#74e4bd', '#ff9c9a', '#f5c975'
+RANGES = {'1 s': {'30 s': 30, '1 min': 60, '2 min': 120},
+          'Time': {'1 h': 60, '4 h': 240, '16 h': 960},
+          'Capital': {'1 min': 60, '3 min': 180, '5 min': 300}}
 
 
 def money(value, digits=2):
@@ -63,85 +68,174 @@ class Desktop:
         self.version = None
         self.history = []
         self.state = None
+        self.connected = False
         self.view = '1 s'
         self.chart_key = None
         self.table_key = None
         self.result = 1
         root.configure(bg=BG)
         root.title('VisualTrader | BTC/USDT')
-        root.geometry('1150x760')
-        root.minsize(780, 580)
+        screen_width, screen_height = root.winfo_screenwidth(), root.winfo_screenheight()
+        root.geometry(f'{min(1328, screen_width - 32)}x{min(840, screen_height - 85)}+12+12')
+        root.minsize(780, 560)
         root.protocol('WM_DELETE_WINDOW', self.close)
+        # Keep point-sized controls usable on compact high-DPI Windows displays.
+        if float(root.tk.call('tk', 'scaling')) > 1.55:
+            root.tk.call('tk', 'scaling', 1.55)
         self.style()
-        frame = ttk.Frame(root, padding=14)
+        self.axis = font.Font(root=root, family='Consolas', size=8)
+        frame = ttk.Frame(root, padding=(14, 8, 14, 6))
         frame.pack(fill='both', expand=True)
-        top = ttk.Frame(frame)
-        top.pack(fill='x')
-        ttk.Label(top, text='BTC / USDT', style='Title.TLabel').pack(side='left')
-        self.label = ttk.Label(top, anchor='e', style='Muted.TLabel')
+
+        header = ttk.Frame(frame)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(2, weight=1)
+        header.grid(row=0, column=0, sticky='ew', pady=(0, 10))
+        ttk.Label(header, text='◈  VISUALTRADER', style='Brand.TLabel').pack(side='left')
+        ttk.Label(header, text='PAPER TRADING', style='Paper.TLabel', padding=(10, 5)).pack(side='right')
+        self.label = ttk.Label(header, style='Muted.TLabel', padding=(0, 0, 14, 0))
         self.label.pack(side='right')
-        self.stats = ttk.Label(frame, style='Stats.TLabel')
-        self.stats.pack(fill='x', pady=(7, 11))
-        controls = ttk.Frame(frame)
+
+        overview = ttk.Frame(frame)
+        overview.grid(row=1, column=0, sticky='ew', pady=(0, 8))
+        quote = ttk.Frame(overview)
+        overview.columnconfigure(1, weight=1)
+        quote.grid(row=0, column=0, sticky='w', padx=(0, 16))
+        ttk.Label(quote, text='BTC/USDT · BINANCE SPOT', style='Muted.TLabel').pack(anchor='w')
+        self.price = ttk.Label(quote, text='—', style='Title.TLabel')
+        self.price.pack(anchor='w')
+        self.metrics = {}
+        metrics = ttk.Frame(overview)
+        metrics.grid(row=0, column=1, sticky='ew')
+        for i, (key, title) in enumerate([('equity', 'CAPITAL LIQ.'), ('net', 'P&L NET'),
+                                         ('fees', 'FRAIS'), ('drawdown', 'DRAWDOWN MAX.')]):
+            metrics.columnconfigure(i, weight=1, uniform='metric')
+            tile = ttk.Frame(metrics, style='Panel.TFrame', padding=(8, 6))
+            tile.grid(row=0, column=i, sticky='nsew', padx=(5, 0))
+            ttk.Label(tile, text=title, style='Muted.Panel.TLabel').pack(anchor='w')
+            value = ttk.Label(tile, text='—', style='Value.Panel.TLabel')
+            value.pack(anchor='w', pady=(3, 0))
+            self.metrics[key] = value
+
+        def reflow(event):
+            compact = event.width < 970
+            metrics.grid_configure(row=int(compact), column=int(not compact),
+                                   columnspan=2 if compact else 1, pady=(4, 0) if compact else 0)
+        overview.bind('<Configure>', reflow)
+
+        workspace = ttk.Frame(frame)
+        workspace.grid(row=2, column=0, sticky='nsew', pady=(0, 8))
+        plot = ttk.Frame(workspace, style='Panel.TFrame', padding=(10, 7, 10, 4))
+        plot.pack(side='left', fill='both', expand=True)
+        controls = ttk.Frame(plot, style='Panel.TFrame')
         controls.pack(fill='x')
         self.view_var = tk.StringVar(value=self.view)
-        for view in ('1 s', 'Time', 'Capital'):
+        for i, view in enumerate(('1 s', 'Time', 'Capital'), 1):
             ttk.Radiobutton(controls, text=view, value=view, variable=self.view_var,
-                            command=self.select_view).pack(side='left', padx=(0, 12))
-        self.pause = ttk.Button(controls, text='Pause entrées', command=self.toggle_pause, state='disabled')
-        self.pause.pack(side='right')
-        self.chart = tk.Canvas(frame, background=PANEL, highlightthickness=0, height=330)
-        self.chart.pack(fill='both', expand=True, pady=(7, 10))
+                            style='Segment.TRadiobutton', command=self.select_view).pack(side='left', padx=(0, 4))
+            root.bind(f'<Control-Key-{i}>', lambda event, value=view: self.switch_view(value))
+        self.range_var = tk.StringVar()
+        self.range = ttk.Combobox(controls, state='readonly', textvariable=self.range_var, width=8)
+        self.range.pack(side='right')
+        self.range.bind('<<ComboboxSelected>>', lambda event: self.redraw())
+        self.set_ranges()
+        self.chart = tk.Canvas(plot, background=PANEL, highlightthickness=0, height=165)
+        self.chart.pack(fill='both', expand=True, pady=(5, 0))
         self.chart.bind('<Configure>', self.resize)
-        self.book_note = ttk.Label(frame, style='Muted.TLabel')
-        self.book_note.pack(fill='x')
+        self.chart.bind('<Motion>', self.inspect)
+        self.chart.bind('<Leave>', self.clear_cursor)
+        self.chart.bind('<MouseWheel>', self.zoom)
+        self.points = []
+        self.cursor = []
+        self.hover = None
+        self.chart_bounds = ()
+        self.detail = ttk.Label(plot, text='En attente du marché', style='Muted.Panel.TLabel')
+        self.detail.pack(fill='x', pady=(3, 0))
+
+        side = ttk.Frame(workspace, width=225, style='Panel.TFrame', padding=(8, 5))
+        side.pack(side='right', fill='y', padx=(9, 0), before=plot)
+        side.pack_propagate(False)
+        ttk.Label(side, text='Carnet d’ordres', style='Section.Panel.TLabel').pack(anchor='w')
+        self.depth = tk.Canvas(side, bg=PANEL, highlightthickness=0, height=121)
+        self.depth.pack(fill='x', pady=(3, 2))
+        self.depth_key = None
+        self.depth.bind('<Configure>', lambda event: self.draw_depth(force=True))
+        self.book_note = ttk.Label(side, text='Spread —', style='Muted.Panel.TLabel')
+        self.book_note.pack(anchor='w')
+        ttk.Separator(side).pack(fill='x', pady=4)
+        ttk.Label(side, text='Stratégie active', style='Muted.Panel.TLabel').pack(anchor='w')
+        self.strategy = ttk.Label(side, text='Cash', style='Section.Panel.TLabel')
+        self.strategy.pack(anchor='w', pady=(0, 3))
+        self.decision = ttk.Label(side, text='En attente du moteur', style='Muted.Panel.TLabel', wraplength=195)
+        self.decision.pack(anchor='w')
+
         self.tabs = ttk.Notebook(frame)
-        self.tabs.pack(fill='x', pady=(9, 0))
+        self.tabs.grid(row=3, column=0, sticky='ew')
         self.tables = {}
-        self.table('Carnet', [('Côté', 70), ('Prix USDT', 145), ('BTC', 120)])
-        self.table('Transactions', [('Heure', 100), ('Côté', 70), ('Prix USDT', 140), ('BTC', 120)])
-        self.table('Exécutions', [('Heure', 85), ('Côté', 60), ('Prix USDT', 105),
-                                  ('BTC', 105), ('Frais', 85), ('Net cycle', 90), ('Motif', 185)])
+        self.table('Transactions', [('Heure', 122), ('Côté', 105), ('Prix USDT', 140), ('Quantité BTC', 128)])
+        self.table('Exécutions', [('Heure', 85), ('Côté', 60), ('Prix USDT', 105), ('BTC', 105),
+                                  ('Frais', 75), ('Latence', 77), ('Net cycle', 82), ('Motif', 165)])
         self.table('Optimiseur', [('Stratégie', 120), ('Score pb', 100), ('Net réalisé', 110),
-                                 ('Cycles', 70), ('Drawdown', 105)])
+                                  ('Cycles', 70), ('Drawdown', 105)])
         self.table('Statistiques', [('Indicateur', 235), ('Valeur', 270)])
-        self.table('Décisions', [('Heure', 95), ('Couverture', 100), ('Motif', 480)])
+        self.table('Décisions', [('Heure', 95), ('Couverture', 100), ('Motif', 465)])
         self.tabs.bind('<<NotebookTabChanged>>', self.tab_changed)
         bottom = ttk.Frame(frame)
-        bottom.pack(fill='x', pady=(8, 0))
+        bottom.grid(row=4, column=0, sticky='ew', pady=(6, 0))
         self.runtime = ttk.Label(bottom, style='Muted.TLabel')
+        self.pause = ttk.Button(bottom, text='Pause entrées', command=self.toggle_pause, state='disabled')
+        self.pause.pack(side='right')
+        ttk.Button(bottom, text='Exporter le journal', command=self.export).pack(side='right', padx=(0, 6))
         self.runtime.pack(side='left', fill='x', expand=True)
-        ttk.Button(bottom, text='Exporter le journal', command=self.export).pack(side='right')
         self.poll()
         if smoke:
-            root.after(8000, self.close)
+            root.after(12000, self.close)
 
     def style(self):
         style = ttk.Style(self.root)
         style.theme_use('clam')
         style.configure('.', background=BG, foreground=FG, font=('Segoe UI', 10))
-        style.configure('Title.TLabel', font=('Segoe UI Semibold', 25), foreground=UP)
-        style.configure('Stats.TLabel', font=('Consolas', 12))
-        style.configure('Muted.TLabel', foreground=MUTED)
+        style.configure('Panel.TFrame', background=PANEL, borderwidth=1, relief='solid', bordercolor=GRID)
+        style.configure('Title.TLabel', foreground=FG, font=('Segoe UI Semibold', 25))
+        style.configure('Brand.TLabel', foreground=GOLD, font=('Segoe UI Semibold', 12))
+        style.configure('Paper.TLabel', background='#352b1c', foreground=GOLD, font=('Consolas', 10, 'bold'))
+        style.configure('Muted.TLabel', foreground=MUTED, font=('Segoe UI', 9))
+        style.configure('Muted.Panel.TLabel', background=PANEL, foreground=MUTED, font=('Segoe UI', 9))
+        style.configure('Section.Panel.TLabel', background=PANEL, foreground=FG, font=('Segoe UI Semibold', 12))
+        style.configure('Value.Panel.TLabel', background=PANEL, foreground=FG, font=('Consolas', 12, 'bold'))
         style.configure('Treeview', background=PANEL, fieldbackground=PANEL, foreground=FG,
-                        rowheight=22, borderwidth=0, font=('Consolas', 10))
-        style.configure('Treeview.Heading', background=GRID, foreground=FG)
-        style.configure('TButton', background=GRID, padding=5)
-        style.configure('TNotebook.Tab', padding=(10, 4))
-        style.map('Treeview', background=[('selected', '#315448')])
-        style.map('TButton', background=[('active', '#315448')])
-        style.map('TNotebook.Tab', background=[('selected', '#315448')])
+                        rowheight=23, borderwidth=0, font=('Consolas', 10))
+        style.configure('Treeview.Heading', background='#202b39', foreground=MUTED, relief='flat')
+        style.configure('TButton', background='#263446', bordercolor=GRID, padding=(9, 4))
+        style.configure('TNotebook', borderwidth=0, tabmargins=(0, 0, 0, 0))
+        style.configure('TNotebook.Tab', background=BG, foreground=MUTED, padding=(13, 6))
+        style.configure('Segment.TRadiobutton', background=PANEL, foreground=MUTED,
+                        indicatormargin=0, padding=(9, 5))
+        style.layout('Segment.TRadiobutton', [
+            ('Radiobutton.padding', {'children': [
+                ('Radiobutton.focus', {'children': [('Radiobutton.label', {})]})
+            ]})
+        ])
+        style.map('Segment.TRadiobutton', background=[('selected', '#314059'), ('active', GRID)],
+                  foreground=[('selected', FG)], focuscolor=[('focus', GOLD)])
+        style.map('Treeview', background=[('selected', '#2b4661')], foreground=[('selected', FG)])
+        style.map('TButton', background=[('active', '#344a63')], bordercolor=[('focus', GOLD)])
+        style.map('TNotebook.Tab', background=[('selected', '#26364b')], foreground=[('selected', FG)])
+        style.map('TCombobox', fieldbackground=[('readonly', '#263446')], foreground=[('readonly', FG)])
+
 
     def table(self, name, columns):
         pane = ttk.Frame(self.tabs)
-        grid = ttk.Treeview(pane, columns=list(range(len(columns))), show='headings', height=5)
+        grid = ttk.Treeview(pane, columns=list(range(len(columns))), show='headings', height=3)
         for i, (label, width) in enumerate(columns):
-            grid.heading(i, text=label, anchor='w')
-            grid.column(i, width=width, minwidth=45, stretch=True)
+            anchor = 'w' if i == 0 or label in {'Côté', 'Motif', 'Valeur'} else 'e'
+            grid.heading(i, text=label, anchor=anchor)
+            grid.column(i, width=width, minwidth=45, stretch=True, anchor=anchor)
         scrollbar = ttk.Scrollbar(pane, orient='vertical', command=grid.yview)
         grid.configure(yscrollcommand=scrollbar.set)
         grid.tag_configure('up', foreground=UP)
         grid.tag_configure('down', foreground=DOWN)
+        grid.tag_configure('stripe', background='#192534')
         grid.pack(side='left', fill='both', expand=True)
         scrollbar.pack(side='right', fill='y')
         self.tables[name] = grid
@@ -151,8 +245,25 @@ class Desktop:
         self.chart_key = None
         self.redraw()
 
+    def switch_view(self, view):
+        self.view_var.set(view)
+        self.select_view()
+
+    def set_ranges(self):
+        choices = list(RANGES[self.view])
+        self.range.configure(values=choices)
+        self.range_var.set(choices[-1])
+
     def select_view(self):
         self.view = self.view_var.get()
+        self.hover = None
+        self.set_ranges()
+        self.redraw()
+
+    def zoom(self, event):
+        options = list(RANGES[self.view])
+        index = options.index(self.range_var.get()) + (-1 if event.delta > 0 else 1)
+        self.range_var.set(options[max(0, min(len(options) - 1, index))])
         self.redraw()
 
     def tab_changed(self, _event):
@@ -175,17 +286,31 @@ class Desktop:
                     self.history = history
                     self.version = history[-1]['t'] if history else None
                 self.state = state
+                self.connected = True
                 self.render()
                 if self.smoke and state['marketReady'] and state['chart']:
                     if self.view == 'Time' and (self.history or state['mode'] != 'live'):
-                        assert self.chart.find_all() and self.tables['Carnet'].get_children()
+                        assert self.points and self.depth.find_all()
+                        self.switch_view('Capital')
+                        assert self.points
+                        self.switch_view('1 s')
+                        assert self.points
+                        self.inspect_point(self.points[-1][0])
+                        assert self.cursor and 'O ' in self.detail.cget('text')
+                        self.clear_cursor()
+                        self.tabs.select(2)
+                        self.update_table()
+                        assert self.tables['Optimiseur'].get_children()
                         self.result = 0
                         self.close()
                         return
-                    self.view_var.set('Time')
-                    self.select_view()
+                    if self.view != 'Time':
+                        self.switch_view('Time')
             except (OSError, ValueError):
-                self.label.configure(text='PAPER TRADING | Runtime indisponible')
+                self.connected = False
+                self.label.configure(text='●  RUNTIME INDISPONIBLE', foreground=DOWN)
+                self.runtime.configure(text='Reconnexion au moteur local…')
+                self.draw_depth(force=True)
                 self.pause.state(['disabled'])
             finally:
                 self.future = None
@@ -214,18 +339,28 @@ class Desktop:
     def render(self):
         s = self.state
         w = s['wallet']
-        status = 'BINANCE LIVE' if s['mode'] == 'live' and s['marketReady'] else s['detail']
-        self.label.configure(text='PAPER TRADING | ' + status)
-        self.stats.configure(text=f"{money(s['price'])} USDT   Capital {money(w['equity'])}   "
-                             f"Net {money(w['net'])}   Frais {money(w['fees'])}   DD {money(w['drawdown'])}")
+        live = s['mode'] == 'live' and s['marketReady']
+        status = 'BINANCE LIVE' if live else s['detail'].upper()
+        self.label.configure(text='●  ' + status, foreground=UP if live else GOLD)
+        self.price.configure(text=money(s['price']))
+        for key, label in self.metrics.items():
+            value = w[key]
+            prefix = '+' if key == 'net' and value is not None and value > 0 else ''
+            color = FG
+            if key == 'net' and value:
+                color = UP if value > 0 else DOWN
+            label.configure(text=prefix + money(value), foreground=color)
         review = s['review'][0]['reason'] if s['review'] else 'Validation en attente'
-        self.book_note.configure(text=f"Spread {money(s['spread'], 3)} pb   |   "
-                                 f"Actif {s['strategy'] or 'Cash'}   |   Candidat {s['nomination'] or '—'}   |   {review}")
+        self.book_note.configure(text=f"Spread  {money(s['spread'], 3)} pb")
+        self.strategy.configure(text=s['strategy'] or 'Cash')
+        candidate = s['waiting'] or s['nomination']
+        self.decision.configure(text=f"Candidat {candidate} · {review}" if candidate else review)
         c = s['counts']
         lag = s['recent']['lagMs']
-        self.runtime.configure(text=f"{s['mode']} #{s['session']}  |  {c['candle']} bougies  "
-                               f"{c['trade']} trades  {c['book']} carnets  |  "
-                               f"{c['gaps']} manquantes  |  retard {lag if lag is not None else '—'} ms")
+        self.runtime.configure(text=f"{s['mode'].upper()}  #{s['session']}     "
+                               f"{s['strategy'] or 'Cash'}     {c['gaps']} manquantes     "
+                               f"Retard {lag if lag is not None else '—'} ms")
+        self.draw_depth()
         self.pause.configure(text='Reprendre entrées' if s['paused'] else 'Pause entrées')
         self.pause.state(['!disabled'] if self.action is None else ['disabled'])
         self.redraw()
@@ -236,18 +371,12 @@ class Desktop:
             return
         s = self.state
         name = self.tabs.tab(self.tabs.select(), 'text')
-        if name == 'Carnet':
-            book = s['book'] or {'bids': [], 'asks': []}
-            rows = [(tag, side, money(price), money(size, 6))
-                    for tag, side, levels in [('down', 'Ask', reversed(book['asks'][:5])),
-                                               ('up', 'Bid', book['bids'][:5])]
-                    for price, size in levels]
-        elif name == 'Transactions':
+        if name == 'Transactions':
             rows = [('down' if t['sell'] else 'up', clock(t['t']), 'Vente' if t['sell'] else 'Achat',
                      money(t['price']), money(t['size'], 6)) for t in s['tape']]
         elif name == 'Exécutions':
             rows = [('up' if f['side'] == 'BUY' else 'down', clock(f['time']), f['side'], money(f['price']),
-                     money(f['qty'], 8), money(f['fee'], 4), money(f['net'], 4), f['reason']) for f in s['fills']]
+                     money(f['qty'], 8), money(f['fee'], 4), str(f['latencyMs']) + ' ms', money(f['net'], 4), f['reason']) for f in s['fills']]
         elif name == 'Optimiseur':
             rows = [('', c['id'], money(c['score']), money(c['net']), c['trades'], money(c['drawdown']))
                     for c in sorted(s['candidates'], key=lambda c: c['score'] if c['score'] is not None else -1000000,
@@ -274,12 +403,38 @@ class Desktop:
         table = self.tables[name]
         children = table.get_children()
         for i, (tag, *values) in enumerate(rows):
+            tags = (tag, 'stripe') if i % 2 else (tag,)
             if i < len(children):
-                table.item(children[i], tags=(tag,), values=values)
+                table.item(children[i], tags=tags, values=values)
             else:
-                table.insert('', 'end', tags=(tag,), values=values)
+                table.insert('', 'end', tags=tags, values=values)
         if len(children) > len(rows):
             table.delete(*children[len(rows):])
+
+    def draw_depth(self, force=False):
+        book = self.state['book'] if self.connected else None
+        if not force and book == self.depth_key:
+            return
+        self.depth_key = book
+        canvas = self.depth
+        canvas.delete('all')
+        width = canvas.winfo_width()
+        canvas.create_text(1, 8, text='PRIX USDT', anchor='w', fill=MUTED)
+        canvas.create_text(width - 2, 8, text='BTC', anchor='e', fill=MUTED)
+        if not book:
+            canvas.create_text(1, 43, text='En attente du carnet', anchor='w', fill=MUTED)
+            return
+        asks, bids = book['asks'][:3], book['bids'][:3]
+        levels = list(reversed(asks)) + bids
+        max_qty = max(qty for _, qty in levels) or 1
+        for i, (price, qty) in enumerate(levels):
+            y = 25 + 16 * i + (3 if i >= len(asks) else 0)
+            ask = i < len(asks)
+            color = DOWN if ask else UP
+            canvas.create_rectangle(width * (1 - qty / max_qty), y - 7, width, y + 7,
+                                    fill='#432c39' if ask else '#204139', outline='')
+            canvas.create_text(2, y, anchor='w', text=money(price), fill=color, font=('Consolas', 8))
+            canvas.create_text(width - 2, y, anchor='e', text=money(qty, 5), fill=FG, font=('Consolas', 8))
 
     def redraw(self):
         if self.state is None:
@@ -288,79 +443,152 @@ class Desktop:
         candles = s['chart']
         if s['current'] and (not candles or s['current']['t'] > candles[-1]['t']):
             candles = [*candles, s['current']]
+        limit = RANGES[self.view][self.range_var.get()]
         if self.view == 'Time':
             data = timeline(candles, self.history)
         elif self.view == 'Capital':
             data = [{'t': item['t'], 'c': item['value']} for item in s['equity']]
         else:
-            data = candles[-100:]
-        key = self.view, data[-1:], len(data), self.version if self.view == 'Time' else None
+            data = candles
+        data = data[-limit:]
+        key = self.view, self.range_var.get(), data
         if key == self.chart_key:
             return
         self.chart_key = key
         chart = self.chart
         chart.delete('all')
+        self.points.clear()
+        self.cursor.clear()
         w, h = chart.winfo_width(), chart.winfo_height()
-        title = {'1 s': 'OHLCV · 1 seconde', 'Time': 'Time · clôtures 1 min', 'Capital': 'Capital liquidable · USDT'}[self.view]
-        chart.create_text(12, 13, anchor='w', text=title, fill=MUTED)
         usable = [item for item in data if item['c'] is not None]
-        if not usable or w < 120 or h < 90:
+        if not usable or w < 120 or h < 85:
+            chart.create_text(w / 2, h / 2, text='En attente des données', fill=MUTED)
+            self.detail.configure(text='En attente des données')
             return
         is_candle = self.view == '1 s'
-        bottom = h - (55 if self.view != 'Capital' else 30)
+        volume_visible = self.view != 'Capital' and h >= 160
+        top, bottom = 14, h - (51 if volume_visible else 27)
+        axis = self.axis
+        left, right = 8, w - axis.measure('999 999,99') - 16
+        self.chart_bounds = (left, top, right, bottom)
         high = max(item['h'] if is_candle else item['c'] for item in usable)
         low = min(item['l'] if is_candle else item['c'] for item in usable)
-        pad = max(.01, (high - low) * .07)
+        pad = max(.01, (high - low) * .08)
         high, low = high + pad, low - pad
-        for i in range(5):
-            yy = 30 + (bottom - 30) * i / 4
-            chart.create_line(12, yy, w - 88, yy, fill=GRID)
-            chart.create_text(w - 80, yy, anchor='w', text=money(high - (high - low) * i / 4), fill=MUTED)
-        start, end = data[0]['t'], data[-1]['t']
-        max_vol = max(.001, max(item.get('v', 0) for item in usable))
-        segments, points, volumes = [], [], []
-        prev = None
 
         def ordinate(value):
-            return 30 + (high - value) / (high - low) * (bottom - 30)
+            return top + (high - value) / (high - low) * (bottom - top)
 
+        for i in range(5):
+            value = high - (high - low) * i / 4
+            yy = ordinate(value)
+            chart.create_line(left, yy, right, yy, fill=GRID)
+            chart.create_text(right + 6, yy, anchor='w', text=money(value), fill=MUTED, font=axis)
+        start, end = data[0]['t'], data[-1]['t']
+        for i in range(5 if end != start else 1):
+            x = left + 8 + (right - left - 16) * i / 4
+            chart.create_line(x, top, x, bottom, fill=GRID)
+            chart.create_text(x, h - 8, text=clock(start + (end - start) * i / 4), fill=MUTED,
+                              anchor='w' if i == 0 else 'e' if i == 4 else 'center', font=axis)
+
+        def draw_segment(points):
+            if len(points) < 4:
+                return
+            if self.view == 'Time':
+                chart.create_polygon(*points, points[-2], bottom, points[0], bottom, fill='#19372f', outline='')
+            chart.create_line(*points, fill=UP, width=2)
+
+        points, volumes = [], {}
+        prev = None
+        max_vol = max(.001, max(item.get('v', 0) for item in usable))
+        body = max(2, min(8, (right - left) / len(data) * .6))
         for item in data:
             t, price = item['t'], item['c']
-            x = 16 + (w - 110) * (t - start) / max(1, end - start)
+            x = left + 8 + (right - left - 16) * (t - start) / max(1, end - start)
             if price is None or prev is not None and t - prev > (60000 if self.view == 'Time' else 1000):
-                if len(points) >= 4:
-                    segments.append(points)
+                draw_segment(points)
                 points = []
             prev = t
             if price is None:
                 continue
-            if item.get('v'):
-                volumes.append((x, item['v']))
             y = ordinate(price)
+            self.points.append((x, y, item))
+            color = UP if not is_candle or price >= item['o'] else DOWN
+            if volume_visible and item.get('v'):
+                bucket = round(x / 4) * 4
+                if item['v'] > volumes.get(bucket, (0, ''))[0]:
+                    volumes[bucket] = item['v'], color
             if is_candle:
-                color = UP if price >= item['o'] else DOWN
                 chart.create_line(x, ordinate(item['h']), x, ordinate(item['l']), fill=color)
-                chart.create_line(x, y, x, ordinate(item['o']) + .25, width=3, fill=color)
+                opening = ordinate(item['o'])
+                chart.create_rectangle(x - body / 2, min(y, opening), x + body / 2,
+                                       max(y, opening) + 1, fill=color, outline='')
             else:
                 points.extend((x, y))
-        if len(points) >= 4:
-            segments.append(points)
-        for segment in segments:
-            chart.create_line(*segment, fill=UP, width=2)
-        # Reduce volume bars on the long view to one shape per horizontal bucket.
-        bins = {}
-        for x, volume in volumes:
-            bucket = round(x / 4) * 4
-            bins[bucket] = max(volume, bins.get(bucket, 0))
-        for x, volume in bins.items():
-            chart.create_line(x, h - 25, x, h - 25 - 19 * volume / max_vol, fill='#4d776b')
-        for i in range(5):
-            t = start + (end - start) * i / 4
-            chart.create_text(35 + (w - 151) * i / 4, h - 11, text=clock(t), fill=MUTED)
+        draw_segment(points)
+        for x, (volume, color) in volumes.items():
+            chart.create_line(x, h - 19, x, h - 19 - 20 * volume / max_vol,
+                              fill='#547d72' if color == UP else '#87565c', width=2)
+        _, yy, last = self.points[-1]
+        chart.create_line(left, yy, right, yy, fill='#557f78', dash=(2, 5))
+        chart.create_rectangle(right + 2, yy - 9, w - 1, yy + 9, fill=UP, outline='')
+        chart.create_text(right + 6, yy, text=money(last['c']), fill=BG, anchor='w', font=axis)
+        if len(self.points) == 1:
+            x, y, _ = self.points[0]
+            chart.create_oval(x - 2, y - 2, x + 2, y + 2, fill=UP, outline='')
+        self.describe(last)
+        if self.hover is not None:
+            self.inspect_point(self.hover)
+
+    def describe(self, item):
+        line = f"{clock(item['t'])}    "
+        if self.view == '1 s':
+            line += "   ".join(f'{key.upper()} {money(item[key])}' for key in ('o', 'h', 'l', 'c'))
+        else:
+            line += f"{money(item['c'])} USDT"
+        if 'v' in item:
+            line += f"    Vol {money(item['v'], 4)} BTC"
+        self.detail.configure(text=line)
+
+    def inspect(self, event):
+        self.inspect_point(event.x)
+
+    def inspect_point(self, position):
+        if not self.points:
+            return
+        self.hover = position
+        index = bisect_left(self.points, position, key=lambda item: item[0])
+        x, y, item = min(self.points[max(0, index - 1):index + 1], key=lambda item: abs(item[0] - position))
+        left, top, right, bottom = self.chart_bounds
+        coordinates = [(x, top, x, bottom), (left, y, right, y), (x - 3, y - 3, x + 3, y + 3)]
+        if not self.cursor:
+            chart = self.chart
+            self.cursor = [chart.create_line(*coordinates[0], fill=MUTED, dash=(3, 3)),
+                           chart.create_line(*coordinates[1], fill=MUTED, dash=(3, 3)),
+                           chart.create_oval(*coordinates[2], fill=GOLD, outline=BG)]
+        else:
+            for cursor, coords in zip(self.cursor, coordinates):
+                self.chart.coords(cursor, *coords)
+        self.describe(item)
+
+    def clear_cursor(self, _event=None):
+        self.hover = None
+        for item in self.cursor:
+            self.chart.delete(item)
+        self.cursor.clear()
+        if self.points:
+            self.describe(self.points[-1][2])
+
 
     def close(self):
         self.worker.shutdown(wait=False, cancel_futures=True)
         self.root.destroy()
+
+
+def configure_dpi():
+    if sys.platform == 'win32':
+        import ctypes
+        ctypes.windll.user32.SetProcessDPIAware()
 
 
 def main():
@@ -368,6 +596,7 @@ def main():
     parser.add_argument('--port', default=8787, type=int)
     parser.add_argument('--smoke', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
+    configure_dpi()
     root = tk.Tk()
     desktop = Desktop(root, Client(args.port), args.smoke)
     root.mainloop()
