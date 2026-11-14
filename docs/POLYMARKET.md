@@ -35,3 +35,5 @@ python -B polymarket_audit.py --db data/polymarket-v2/paper.sqlite
 ```
 
 Le replay recalcule les features, probabilités, motifs et fills depuis les chandelles et snapshots REST archivés. Les lignes dépourvues de l’heure exacte du calcul sont recensées à part. Le journal de décision est écrit dans la même transaction que ses entrées brutes. Les snapshots REST ne reproduisent ni le flux CLOB exhaustif ni une exécution réelle. Le TWAP Chainlink exact via PolyBolt demande une authentification. Binance reste le proxy, et le règlement officiel reste la source des paiements.
+
+Le [rapport CLOB, l'exploitation et les 20 priorités](POLYMARKET_REPORT.md) documentent le collecteur parallèle et le comparatif REST/WebSocket.

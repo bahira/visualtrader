@@ -180,6 +180,13 @@ class Dashboard:
         net = money(item.get('net'),4) + ' $' if item.get('settled') else '—'
         paired = self.state.get('paired',{})
         missed = self.state.get('coverage',{}).get('missed',0)
+        feed_status = self.path.parent.parent / 'polymarket-clob' / 'status.json'
+        try:
+            feed = json.loads(feed_status.read_text(encoding='utf8'))
+            if feed['slug'] == slug and feed['fresh'] and now - feed['checked'] < 5000:
+                self.health.configure(text='●  CLOB ENREGISTRÉ',fg=GREEN)
+        except (OSError,ValueError,KeyError):
+            pass
         self.positions.configure(text=f"Skew net {net}   ·   Ouvert {pending} / {money(item.get('openCost'),2)} $"
                                  f"   ·   Δ vs Momentum {money(paired.get('skewNet'),2)} $   ·   Ratés {missed}")
         if 'history' in self.state:
