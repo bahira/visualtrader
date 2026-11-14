@@ -5,9 +5,9 @@ export const fastPolicy = {
 };
 
 export class FastPaper {
-  constructor(config, saved, log, rules = fastPolicy) {
+  constructor(config, saved, log, rules = fastPolicy, label = 'Rapide') {
     this.rules = rules;
-    this.wallet = new Portfolio({...config, stake:this.rules.stake, cooldownMs:0, depthSizing:true}, 'Rapide', saved?.wallet);
+    this.wallet = new Portfolio({...config, stake:this.rules.stake, cooldownMs:0, depthSizing:true}, label, saved?.wallet);
     this.log = log;
     this.closedNotional = saved?.closedNotional ?? 0;
     this.entryNotional = saved?.entryNotional ?? 0;
@@ -36,7 +36,7 @@ export class FastPaper {
     this.minuteCycles = 0;
   }
   record(row, time) {
-    const full = {...row, wallet:this.wallet.id, strategy:'Cadence 5 s', time};
+    const full = {...row, wallet:this.wallet.id, strategy:this.wallet.id, time};
     this.log(row.type, full);
     if (row.type === 'reject') {
       this.rejections++;
@@ -93,7 +93,7 @@ export class FastPaper {
       reason = offset < 800 ? 'Déséquilibre au bid' : 'Entrée de cadence';
     }
     if (wallet.intent(side,time,reason,mid)) {
-      this.log('signal', {wallet:wallet.id, strategy:'Cadence 5 s', time, side, reason, mid});
+      this.log('signal', {wallet:wallet.id, strategy:this.wallet.id, time, side, reason, mid});
     }
   }
   summary(book, now) {

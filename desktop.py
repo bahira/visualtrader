@@ -68,6 +68,11 @@ class Desktop:
         self.version = None
         self.history = []
         self.state = None
+        archive = Path(__file__).resolve().parent / 'data' / 'phoenix-archive.json'
+        try:
+            self.phoenix_backtest = json.loads(archive.read_text(encoding='utf8'))
+        except (OSError, ValueError):
+            self.phoenix_backtest = None
         self.connected = False
         self.view = '1 s'
         self.chart_key = None
@@ -182,6 +187,8 @@ class Desktop:
         self.table('Cadence', [('Indicateur', 235), ('Valeur', 265)])
         self.table('Fills rapides', [('Heure', 85), ('Côté', 60), ('Prix USDT', 105), ('BTC', 95),
                                     ('Frais', 75), ('Latence', 77), ('Net cycle', 82), ('Motif', 170)])
+        self.table('Phoenix', [('Indicateur', 235), ('Cadence', 180), ('Filtre Phoenix', 200)])
+        self.table('Archive 4 h', [('Indicateur', 240), ('Freqtrade · futures', 400)])
         self.tabs.bind('<<NotebookTabChanged>>', self.tab_changed)
         bottom = ttk.Frame(frame)
         bottom.grid(row=4, column=0, sticky='ew', pady=(6, 0))
@@ -422,6 +429,39 @@ class Desktop:
                     ('Refus et annulations', fast['rejections']),
                     ('Cycles bénéficiaires', wallet['wins']),
                 ]]
+        elif name == 'Phoenix':
+            rows = []
+            if s.get('phoenix') and s.get('fast'):
+                rapid, phoenix = s['fast'], s['phoenix']
+                first, second = rapid['wallet'], phoenix['wallet']
+                rows = [('', label, base, filtered) for label, base, filtered in [
+                    ('Cycles / 60 s', rapid['cycles60'], phoenix['cycles60']),
+                    ('P&L net · USDT', money(first['net'],4), money(second['net'],4)),
+                    ('Frais · USDT', money(first['fees'],4), money(second['fees'],4)),
+                    ('Net moyen / cycle', money(first['averageNet'],4), money(second['averageNet'],4)),
+                    ('Cycles terminés', first['trades'], second['trades']),
+                    ('Cycles gagnants', first['wins'], second['wins']),
+                    ('Minutes à la cible', f"{rapid['qualifiedMinutes']}/{rapid['fullMinutes']}",
+                     f"{phoenix['qualifiedMinutes']}/{phoenix['fullMinutes']}"),
+                    ('Biais du filtre spot', '—', {'long':'Haussier','short':'Baissier'}.get(phoenix['bias'],'En attente')),
+                    ('Signaux haussiers / baissiers', '—', f"{phoenix['signals']['long']} / {phoenix['signals']['short']}"),
+                ]]
+        elif name == 'Archive 4 h':
+            backtest = self.phoenix_backtest
+            rows = []
+            if backtest:
+                rows = [('', label, value) for label, value in [
+                    ('Période UTC', backtest['start'][:10] + ' → ' + backtest['end'][:10]),
+                    ('Rendement portefeuille', money(backtest['profit'] * 100) + ' %'),
+                    ('Drawdown maximal', money(backtest['drawdown'] * 100) + ' %'),
+                    ('Cycles / taux de réussite', f"{backtest['cycles']} / {money(backtest['wins'] * 100)} %"),
+                    ('Profit factor', money(backtest['profitFactor'])),
+                    ('Funding comptabilisé · USDT', money(backtest['funding'])),
+                    ('Levier de l’archive', ', '.join(money(x,0) + '×' for x in backtest['leverage'])),
+                ]]
+                rows += [('', pair['name'], f"{money(pair['net'])} USDT · {pair['cycles']} cycles")
+                         for pair in backtest['pairs']]
+                rows += [('', year, money(net) + ' USDT') for year, net in sorted(backtest['years'].items())]
         else:
             rows = [('', clock(r['time']), money(100 * r['coverage']) + ' %' if 'coverage' in r else '—',
                      r['reason']) for r in s['review']]

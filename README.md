@@ -56,3 +56,7 @@ Le scénario hors ligne rejoue le carnet spot aux tailles 250, 500, 750, 1 250 e
 - Garder l’écoute sur loopback. Les commandes de pause vérifient l’origine HTTP locale.
 
 Voir [l’architecture et le modèle](docs/ARCHITECTURE.md) pour les équations, le protocole d’optimisation et les limites du simulateur.
+
+## ERRF Phoenix
+
+Les onglets **Phoenix** et **Archive 4 h** donnent le comparatif spot et le backtest futures importé. Voir [l’intégration et le replay](docs/PHOENIX.md).

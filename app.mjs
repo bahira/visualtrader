@@ -6,17 +6,18 @@ import {createServer} from 'node:http';
 import {parseArgs} from 'node:util';
 import {Engine, bps, decode, policy} from './engine.mjs';
 import {FastPaper} from './fast-paper.mjs';
+import {PhoenixSpot} from './phoenix.mjs';
 import {connect, history, synthetic} from './market.mjs';
 
 const {values:args} = parseArgs({options:{
   mode:{type:'string',default:'live'}, port:{type:'string',default:'8787'},
   speed:{type:'string',default:'1'}, seconds:{type:'string',default:'7200'},
   'fee-bps':{type:'string',default:'10'}, 'slip-bps':{type:'string',default:'1'},
-  'latency-ms':{type:'string',default:'250'}, session:{type:'string'}, db:{type:'string'},
+  'latency-ms':{type:'string',default:'250'}, session:{type:'string'}, 'end-seq':{type:'string'}, db:{type:'string'},
   batch:{type:'boolean',default:false}, help:{type:'boolean',default:false}
 }});
 if (args.help) {
-  console.log('node app.mjs --mode live|demo|replay [--port 8787] [--fee-bps 10] [--slip-bps 1] [--latency-ms 250] [--db path] [--speed 1] [--session id] [--seconds 7200] [--batch]');
+  console.log('node app.mjs --mode live|demo|replay [--port 8787] [--fee-bps 10] [--slip-bps 1] [--latency-ms 250] [--db path] [--speed 1] [--session id] [--end-seq seq] [--seconds 7200] [--batch]');
   process.exit();
 }
 function number(value, min, max, integer = false) {
@@ -69,13 +70,15 @@ const engine = new Engine({config, saved:prior?.engine, log:(kind, row) => {
   dirty ||= kind !== 'signal';
 }});
 const fast = new FastPaper(config, prior?.fast, (kind, row) => engine.log(kind,row));
+const phoenix = new PhoenixSpot(config,prior?.phoenix,(kind,row) => engine.log(kind,row));
+const pockets = [fast, phoenix.fast];
 function flush() {
   if (!capture.length && !activity.length && !dirty) return;
   db.exec('BEGIN IMMEDIATE');
   try {
     for (const [recv, json] of capture) putMarket.run(session,recv,json);
     for (const [kind, json] of activity) putAudit.run(session,kind,json);
-    if (dirty && mode === 'live') putState.run(JSON.stringify({config:configText, engine:engine.checkpoint(), fast:fast.checkpoint()}));
+    if (dirty && mode === 'live') putState.run(JSON.stringify({config:configText, engine:engine.checkpoint(), fast:fast.checkpoint(), phoenix:phoenix.checkpoint()}));
     db.exec('COMMIT');
     capture = [];
     activity = [];
@@ -93,13 +96,28 @@ function ingest(json, recv, record) {
   const lastBook = engine.book;
   const gaps = engine.count.gaps;
   engine.handle(event, marketTime);
-  if (event?.kind === 'book' && engine.book !== lastBook) {
-    if (engine.fresh(marketTime)) fast.tick(engine.book,marketTime,engine.paused);
-    else fast.suspend(marketTime,'Flux insuffisant',true);
-  } else if (engine.count.gaps > gaps || (event?.kind === 'candle' && event.closed && !engine.fresh(marketTime))) {
-    fast.suspend(marketTime,'Flux insuffisant',true);
+  if (event?.kind === 'candle' && event.closed) {
+    const fresh = engine.fresh(marketTime);
+    const gap = engine.count.gaps > gaps;
+    const candleFresh = marketTime - (event.exchange ?? marketTime) <= config.staleMs;
+    if (gap || !fresh) {
+      for (const pocket of pockets) pocket.suspend(marketTime,'Flux insuffisant',true);
+    }
+    const previousBias = phoenix.bias;
+    if (candleFresh) phoenix.candle(event);
+    else phoenix.reset();
+    if (previousBias === 'long' && phoenix.bias !== 'long') {
+      phoenix.fast.suspend(marketTime,'Biais Phoenix perdu');
+    }
+    dirty = true;
+  } else if (event?.kind === 'book' && engine.book !== lastBook) {
+    if (engine.fresh(marketTime)) {
+      fast.tick(engine.book,marketTime,engine.paused);
+      phoenix.tick(engine.book,marketTime,engine.paused);
+    } else {
+      for (const pocket of pockets) pocket.suspend(marketTime,'Flux insuffisant',true);
+    }
   }
-  if (event?.kind === 'candle' && event.closed) dirty = true;
   if (capture.length >= 10_000) flush();
 }
 function status(next, description) {
@@ -108,7 +126,8 @@ function status(next, description) {
   if (next === 'offline') {
     const now = Date.now();
     engine.connectionLost(now);
-    fast.suspend(now,'Flux interrompu',true);
+    phoenix.reset();
+    for (const pocket of pockets) pocket.suspend(now,'Flux interrompu',true);
   }
   engine.log('connection', {time:Date.now(), status:next, reason:description});
 }
@@ -127,7 +146,7 @@ function state({compact = false} = {}) {
     counts:engine.count, chart:compact ? engine.candles.slice(-160) : engine.candles, current:engine.current,
     ...(compact ? {historyVersion:minuteHistory.at(-1)?.t ?? null} : {minuteHistory}),
     tape:engine.tape.slice(0,18), book:book && {bids:book.bids.slice(0,7), asks:book.asks.slice(0,7)},
-    wallet, fast:fast.summary(book,now), equity:compact ? engine.equity.slice(-300) : engine.equity,
+    wallet, fast:fast.summary(book,now), phoenix:phoenix.summary(book,now), equity:compact ? engine.equity.slice(-300) : engine.equity,
     fills:compact ? engine.fills.slice(0,30) : engine.fills, strategy:engine.strategy,
     context:engine.context, nomination:engine.nomination, waiting:engine.waiting, paused:engine.paused,
     window:engine.window, covered:engine.covered, review:compact ? engine.audit.slice(0,8).map(({results,...report}) => report) : engine.audit,
@@ -167,7 +186,7 @@ const api = createServer((req,res) => {
     }
     const time = mode === 'live' ? Date.now() : marketTime;
     engine.pause(req.url === '/api/pause',time);
-    if (engine.paused) fast.suspend(time,'Entrées suspendues');
+    if (engine.paused) for (const pocket of pockets) pocket.suspend(time,'Entrées suspendues');
     flush();
     json({paused:engine.paused});
     return;
@@ -190,7 +209,8 @@ if (mode === 'demo') {
   if (!source || !replayDb.prepare('SELECT 1 FROM market WHERE session=? LIMIT 1').get(source)) {
     throw new Error('Session live introuvable');
   }
-  feed = replayDb.prepare('SELECT recv,json FROM market WHERE session=? ORDER BY seq').iterate(source);
+  const end = args['end-seq'] ? number(args['end-seq'],1,Number.MAX_SAFE_INTEGER,true) : Number.MAX_SAFE_INTEGER;
+  feed = replayDb.prepare('SELECT recv,json FROM market WHERE session=? AND seq<=? ORDER BY seq').iterate(source,end);
   marketTime = 0;
 }
 function finishFeed() {
@@ -205,8 +225,8 @@ if (args.batch) {
     if (activity.length >= 10_000) flush();
   }
   finishFeed();
-  const {wallet,candidates,counts,review,strategy,fast:rapid} = state();
-  console.log(JSON.stringify({mode, elapsedMs:performance.now()-start, counts, strategy, wallet, candidates, fast:{...rapid, recent:undefined},
+  const {wallet,candidates,counts,review,strategy,fast:rapid,phoenix:phx} = state();
+  console.log(JSON.stringify({mode, elapsedMs:performance.now()-start, counts, strategy, wallet, candidates, fast:{...rapid, recent:undefined}, phoenix:{...phx,recent:undefined},
     reviews:review.length, promotions:review.filter(r => r.promoted).length},null,2));
   replayDb?.close();
   db.close();
