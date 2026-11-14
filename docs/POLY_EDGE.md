@@ -26,6 +26,22 @@ node poly_edge.mjs --policy data/poly-edge-experience.json --output data/polymar
 
 Le manifeste permet de faire varier la taille, les marges, le stress et les seuils d’échantillonnage. Chaque sortie a son propre verrou SQLite. `--paper` et `--clob` permettent une répétition sur deux archives compatibles. `--export` produit une ligne JSON par fenêtre avec signaux, timestamps, observations, décision et coûts à chaque latence, phase du test et règlement. Pour porter le protocole sur un autre domaine, raccorder des tables de décisions, carnets et règlements qui respectent le contrat d’entrée. Le code actuel suppose deux issues exclusives, un paiement binaire et cinq minutes par fenêtre.
 
+Le croisement exploratoire avec Binance Spot ajoute le déséquilibre du volume agressif sur les 30 secondes précédant le signal. Il exige 25 secondes actives et coupe sur les deux horloges, côté Binance et à la réception locale. Les agrégats comparent achat, vente et équilibre (seuil 20 %), avec le nombre de marchés, la fréquence Up et le P&L Skew à 500 ms. Les fenêtres sans preuve suffisante restent inconnues.
+
+Le benchmark recompute quatre probabilités sur les mêmes marchés. Carnet seul, déséquilibre 30 s, impulsion (déséquilibre 10 s moins 30 s), et addition des deux corrections au logit du carnet. Il mesure Brier, tentatives, inconnues, fills et P&L stressé sur le même replay. Le worker renouvelle son rapport toutes les cinq minutes avec une empreinte propre et un début prospectif distinct, le 14 novembre à 21 h 20 heure de Paris. Il conserve les résultats exploratoires antérieurs dans `prior`. Ce benchmark ne qualifie ni n’active de stratégie.
+
+```powershell
+node poly_edge.mjs --export | python -B poly_spot_join.py
+node poly_edge.mjs --export | python -B poly_spot_join.py --rows > data/polymarket-v2/spot-joined.ndjson
+python -B poly_spot_join.py --watch data/polymarket-v2/spot-benchmark.json
+```
+
+La vue simplifiée convertit le P&L en euros au taux indicatif USD/EUR de la BCE (approximation 1 USDC ≈ 1 USD). Le taux est rafraîchi en arrière-plan et la conversion est masquée au-delà de sept jours. Une estimation admissible est affichée par heure, jour et 30 jours par extrapolation linéaire du P&L quotidien stressé. Le rapport vidéo versionné est généré avec Python, Pillow et FFmpeg. [Change de référence BCE](https://www.ecb.europa.eu/stats/policy_and_exchange_rates/euro_reference_exchange_rates/html/index.en.html)
+
+```powershell
+python -B docs/render_edge_report.py outputs/VisualTrader-Rapport.mp4 --preview outputs/VisualTrader-Apercu.png
+```
+
 ## 10 indispensables
 
 1. **Frais et coût exécutable** ✓ Calcul par niveau et stress de 0,5 cent supplémentaire par part et par jambe.

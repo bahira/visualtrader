@@ -1,13 +1,15 @@
 """Native Polymarket paper dashboard."""
 import argparse
-from datetime import datetime
+from datetime import date, datetime
 import json
 from pathlib import Path
 import time
+from threading import Thread
 import tkinter as tk
 from tkinter import ttk
 
 from desktop import configure_dpi, money
+from euro_reference import REFERENCE, euro_values, format_euro, read_reference
 
 BG, PANEL, BORDER = '#101721', '#172332', '#2b3c50'
 FG, MUTED, GREEN, RED, AMBER = '#f1f5fa', '#b1bfd1', '#76e5bf', '#ff9e9f', '#f5c975'
@@ -40,6 +42,10 @@ class Dashboard:
         self.modified = None
         self.edge_report = {}
         self.edge_modified = None
+        self.flow_report = {}
+        self.flow_modified = None
+        self.reference = REFERENCE
+        self.fx_attempt = None
         self.simple = True
         self.history = []
         self.market = None
@@ -116,6 +122,8 @@ class Dashboard:
                               (210,60,65,76,80,110),4)
         self.cohorts = self.table('Cohortes',('Signal · côté · régime · spread','Fills / essais','Inconnus','Net stressé'),
                                   (380,100,76,100),4)
+        self.flow = self.table('Flux Binance',('Signal','Marchés','Brier','Fills / essais','Net stressé'),
+                               (185,80,80,100,112),4)
         self.journal.bind('<Double-1>',self.review_selected)
         self.live = ttk.Button(header,text='Revenir au direct',command=self.return_live)
         self.tabs.bind('<<NotebookTabChanged>>',lambda _: self.render_tables())
@@ -125,11 +133,17 @@ class Dashboard:
         hero = tk.Frame(self.overview,bg=PANEL,padx=18,pady=14,
                         highlightthickness=1,highlightbackground=BORDER)
         hero.pack(fill='x')
-        self.label(hero,'ESTIMATION PAPER · PAR JOUR',MUTED,10,True,bg=PANEL).pack(anchor='w')
+        self.label(hero,'COMBIEN PAR JOUR ?',MUTED,10,True,bg=PANEL).pack(anchor='w')
         self.projection = self.label(hero,'Données insuffisantes',FG,25,True,bg=PANEL)
         self.projection.pack(anchor='w',pady=(4,3))
         self.projection_detail = self.label(hero,'Attente du rapport de recherche',MUTED,10,bg=PANEL)
         self.projection_detail.pack(anchor='w')
+        horizons = tk.Frame(hero,bg=PANEL)
+        horizons.pack(fill='x',pady=(8,0))
+        self.hour = self.label(horizons,'— / heure',FG,13,True,bg=PANEL)
+        self.hour.pack(side='left')
+        self.month = self.label(horizons,'— / 30 jours',FG,13,True,bg=PANEL)
+        self.month.pack(side='left',padx=24)
         tiles = tk.Frame(self.overview,bg=BG)
         tiles.pack(fill='x',pady=10)
         self.overview_values = {}
@@ -188,13 +202,34 @@ class Dashboard:
             self.render_tables()
         self.view_button.configure(text='Vue détaillée' if self.simple else 'Vue simplifiée')
 
+    def update_reference(self):
+        try:
+            reference = read_reference()
+            if reference[0]>=self.reference[0]:
+                self.reference = reference
+        except (ValueError,OSError):
+            pass
+
     def refresh_overview(self, now):
+        if self.fx_attempt is None or now-self.fx_attempt>6*3600_000:
+            self.fx_attempt=now
+            Thread(target=self.update_reference,daemon=True).start()
+        fx_date,fx_rate = self.reference
+        fx = fx_rate if 0 <= (date.today()-fx_date).days <= 7 else None
         source = self.path.with_name('edge.json')
         try:
             stamp = source.stat().st_mtime_ns
             if stamp != self.edge_modified:
                 self.edge_report = json.loads(source.read_text(encoding='utf8'))
                 self.edge_modified = stamp
+        except (OSError, ValueError):
+            pass
+        source = self.path.with_name('spot-benchmark.json')
+        try:
+            stamp = source.stat().st_mtime_ns
+            if stamp != self.flow_modified:
+                self.flow_report = json.loads(source.read_text(encoding='utf-8-sig'))
+                self.flow_modified = stamp
         except (OSError, ValueError):
             pass
         report = self.edge_report
@@ -206,17 +241,22 @@ class Dashboard:
         qualified = report.get('qualified',[]) if fresh else []
         model_key = qualified[0] if qualified else 'consensus'
         estimate = models.get(model_key,{}).get('daily') if fresh and report.get('prospective') else None
-        if estimate:
+        if estimate and fx:
             low,high = estimate['range']
-            self.projection.configure(text=f"{estimate['mean']:+.2f} USDC / jour",fg=FG)
-            self.projection_detail.configure(text=f"{EDGE_NAMES[model_key]} · intervalle empirique {low:+.2f} à {high:+.2f} · {estimate['days']} jours")
+            hour,day,month = euro_values(estimate['mean'],fx)
+            self.projection.configure(text=format_euro(day)+' / jour',fg=FG)
+            self.projection_detail.configure(text=f"{EDGE_NAMES[model_key]} · {format_euro(low/fx)} à {format_euro(high/fx)} / jour · {estimate['days']} jours")
+            self.hour.configure(text=format_euro(hour)+' / heure')
+            self.month.configure(text=format_euro(month)+' / 30 jours')
         else:
             policy = report.get('policy',{})
             detail = ('Rapport de recherche indisponible' if not fresh else
                       f"Consensus · {models.get('consensus',{}).get('tradingDays',0)}/{policy.get('minTradingDays',10)} jours avec fills · replay à 500 ms")
-            self.projection.configure(text='Estimation indisponible',fg=FG)
-            self.projection_detail.configure(text=detail)
-        self.overview_values['net'].configure(text=f'{net:+.2f} USDC' if fills else '—',
+            self.projection.configure(text='Estimation indisponible' if not estimate else 'Conversion indisponible',fg=FG)
+            self.projection_detail.configure(text=detail if not estimate else 'Taux BCE récent indisponible')
+            self.hour.configure(text='— / heure')
+            self.month.configure(text='— / 30 jours')
+        self.overview_values['net'].configure(text=(format_euro(net/fx) if fx else f'{net:+.2f} USDC') if fills else '—',
                                              fg=GREEN if net>0 else RED if net<0 else FG)
         self.overview_values['fills'].configure(text=f"{fills} / {model.get('trades',0)}")
         expected = report.get('expected',0)
@@ -232,7 +272,12 @@ class Dashboard:
         gaps = report.get('diagnostics',{})
         quality = (f"Couverture · {gaps.get('missingTrials',0)} signaux manquants · "
                    f"{gaps.get('missingBooks',0)} carnets manquants · {gaps.get('waitingSettlement',0)} règlements en attente.") if fresh else ''
-        self.insights.configure(text='\n'.join(s for s in (status,forecast,quality) if s))
+        conversion = f"Conversion indicative · BCE {fx_date:%d/%m/%Y} · 1 USDC ≈ 1 USD." if fx else ''
+        grouped = self.flow_report.get('benchmark',{})
+        flow = grouped.get('prior',{}).get('250',{}).get('impulse',{})
+        flow_line = (f"Flux Binance · {flow['fills']} fill(s) historique(s) à 250 ms sur {flow['markets']} marchés comparables."
+                     if flow and self.flow_modified and now-self.flow_modified//1_000_000<600000 else '')
+        self.insights.configure(text='\n'.join(s for s in (status,forecast,quality,flow_line,conversion) if s))
 
     def refresh(self):
         changed = False
@@ -463,8 +508,20 @@ class Dashboard:
             label = ' · '.join([EDGE_NAMES.get(variant,variant),*(regimes.get(f,f) for f in factors)])
             cohorts.append(('',(label,f"{item['fills']} / {item['attempts']}",item['unknown'],
                                 money(item['stress'],2) if item['fills'] else '—')))
+        flows = []
+        grouped = self.flow_report.get('benchmark',{})
+        names = {'book':'Carnet seul','flow':'Déséquilibre 30 s','impulse':'Impulsion 10/30 s','combined':'Combinaison'}
+        for phase,label in [('forward','Prospectif'),('prior','Historique')]:
+            for delay in (250,500,1000):
+                models = grouped.get(phase,{}).get(str(delay),{})
+                if models:
+                    flows.append(('open',(f'{label} · {delay} ms','','','','')))
+                for model,item in models.items():
+                    flows.append(('',(names[model],item['markets'],money(item['brier'],3),
+                                      f"{item['fills']} / {item['attempts']}",
+                                      money(item['stressNet'],2) if item['fills'] else '—')))
         for tree,rows in ((self.models,model_rows),(self.journal,trades),(self.decisions,decisions),
-                          (self.lab,lab),(self.cohorts,cohorts)):
+                          (self.lab,lab),(self.cohorts,cohorts),(self.flow,flows)):
             ids = tree.get_children()
             for i,(tag,row) in enumerate(rows):
                 if i < len(ids):

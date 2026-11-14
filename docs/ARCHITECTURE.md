@@ -58,3 +58,22 @@ Le replay lit une capture par numéro de session et remesure la stratégie depui
 Application locale de paper trading. Aucun order routing, modèle maker, ordre partiel, priorité de file, impact de marché ou filtre de placement propre au compte Binance. Chaque candidat contrefactuel lit le même carnet et ne retire pas de liquidité aux autres. Les snapshots à 100 ms ne retracent pas les modifications intermédiaires. Les commissions sont modélisées en USDT et ne reproduisent pas exactement des commissions prélevées en BTC ou BNB. L’alimentation provient des flux publics du marché affiché sur Chrome. Aucune capture de pixels ni dépendance à l’onglet, à la session Binance ou au compte de trading.
 
 Le runtime vise un usage local supervisé. Il n’inclut pas de disponibilité multi-hôte, de supervision externe ou de rétention automatique. SQLite embarqué reste marqué expérimental par Node 24.
+
+## Expériences prospectives Polymarket
+
+```mermaid
+flowchart LR
+    B[Binance BTC, chandelles 1 s] --> P[Journal paper REST]
+    G[Gamma, règle et règlement] --> P
+    W[WebSocket CLOB public] --> C[(Archive trames et reconnexions)]
+    P --> E[Banc prospectif]
+    C --> E
+    M[Manifeste et code avec empreinte] --> E
+    E --> S[(Observations compactes)]
+    S --> E
+    E --> J[Rapport JSON par fenêtre et cohorte]
+    E --> X[Export NDJSON par marché]
+    J --> T[Aperçu et détail Tk]
+```
+
+Le banc lit ses sources sans les modifier. La jonction conserve l’ouverture, l’identifiant du marché, l’horodatage de décision, les réceptions et le règlement. Les rapports d’essai n’alimentent aucune boucle d’ordres. Les variantes sont évaluées à partir des mêmes observations et le rapport agrège les différences sur les fenêtres comparables. Un nouveau manifeste donne une expérience indépendante. Voir les [règles de qualification, la procédure de clonage et les limites de portabilité](POLY_EDGE.md).
