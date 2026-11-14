@@ -57,3 +57,6 @@ Les marchés entiers au-delà de 48 h ou du plafond logique d'environ 1 Gio sont
 Limites actuelles : snapshots book et deltas publics, ordre local des trames, timestamp distant non synchronisé, aucune garantie de priorité de file et aucun fill réel. Une capture comparable et une validation multi-journées sont requises avant de juger la stratégie.
 
 [Flux publics et TWAP](https://docs.polymarket.com/market-data/realtime-data) · [Frais](https://docs.polymarket.com/trading/fees) · [Protocole paper](POLYMARKET.md)
+## Contrôle Windows et première décision appariée
+
+La première décision paper appariée à une capture a produit un fill REST sur Skew. Le résultat CLOB est inconnu : le collecteur s'était arrêté avant le signal après un refus de renommage du fichier de statut par Windows. Ce cas est exclu du P&L apparié. La publication JSON retente les collisions transitoires pour les deux workers et maintient la collecte si le statut reste momentanément verrouillé. Après relance, le CLOB était frais après 14 secondes de lectures concurrentes du statut.

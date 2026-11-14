@@ -1,7 +1,8 @@
 import {DatabaseSync} from 'node:sqlite';
-import {mkdirSync,writeFileSync,renameSync} from 'node:fs';
+import {mkdirSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
+import {publishJson} from './json_status.mjs';
 import {parseArgs} from 'node:util';
 
 const GAMMA = 'https://gamma-api.polymarket.com/markets/slug/';
@@ -191,7 +192,7 @@ async function main() {
   const archive = db.prepare('INSERT OR REPLACE INTO evidence VALUES(?,?)');
   const add = db.prepare('INSERT INTO trials(start,slug,condition,time,record) VALUES(?,?,?,?,?)');
   for (const sig of ['SIGINT','SIGTERM']) process.on(sig,()=>{running=false;});
-  function status() {
+  async function status() {
     const coverage = Object.fromEntries(db.prepare('SELECT state,count(*) AS n FROM coverage GROUP BY state').all().map(r=>[r.state,r.n]));
     const paired = {skewChanged:0,skewNet:0,compared:0};
     const summary = Object.fromEntries(names.map(name=>[name,{trades:0,settled:0,wins:0,fees:0,openCost:0,net:0,brier:null}]));
@@ -223,15 +224,13 @@ async function main() {
       }
     }
     for (const result of Object.values(summary)) if (result.samples) result.brier /= result.samples;
-    const temporary = resolve(dir,'status.tmp');
-    writeFileSync(temporary,JSON.stringify({policy:POLICY,checked:new Date().toISOString(),
+    await publishJson(resolve(dir,'status.json'),{policy:POLICY,checked:new Date().toISOString(),
       current,lastError,evaluated,resolved,summary,coverage,paired,misses:misses.all(),
       history:current ? chart.all(Number(current.slug.split('-').at(-1))*1000) : [],
       journal:journal.all().map(({record,winner,...row})=>{
         const trial = JSON.parse(record);
         return {...row,winner,prob:trial.prob,fills:trial.fills,reasons:trial.reasons};
-      })},null,2));
-    renameSync(temporary,resolve(dir,'status.json'));
+      })},error=>console.warn('Paper status busy:',error.code));
   }
   let settlementCursor = -1;
   async function resolveDue(now) {
@@ -335,7 +334,7 @@ async function main() {
     while (running) {
       lastError = null;
       try { await run(); } catch (error) { lastError=String(error.message); failureReason=lastError; }
-      status();
+      await status();
       await new Promise(resolve=>setTimeout(resolve,2500));
     }
   } finally {

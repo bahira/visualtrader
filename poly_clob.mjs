@@ -1,7 +1,8 @@
 import {DatabaseSync} from 'node:sqlite';
-import {mkdirSync,writeFileSync,renameSync,statfsSync} from 'node:fs';
+import {mkdirSync,statfsSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
+import {publishJson} from './json_status.mjs';
 import {market,quote} from './polymarket_paper.mjs';
 
 const DIR = 'data/polymarket-clob';
@@ -202,11 +203,9 @@ async function main() {
       const quotes = current?.slug===slug ? current.tokens.map(token=>books?.raw(token)) : null;
       const fresh = current?.slug===slug && quotes?.every(q=>q && Math.abs(Date.now()-q.timestamp)<5000);
       if (fresh) lastError = null;
-      const tmp = resolve(DIR,'status.tmp');
-      writeFileSync(tmp,JSON.stringify({checked:Date.now(),slug,connected:socket?.readyState===WebSocket.OPEN,
+      await publishJson(resolve(DIR,'status.json'),{checked:Date.now(),slug,connected:socket?.readyState===WebSocket.OPEN,
         fresh:!!fresh,events:count,total,rejects,lastError,connectionStarted:readyAt,
-        top:quotes?.map(q=>q&&({bid:q.bestBid,ask:q.bestAsk,source:q.timestamp}))},null,2));
-      renameSync(tmp,resolve(DIR,'status.json'));
+        top:quotes?.map(q=>q&&({bid:q.bestBid,ask:q.bestAsk,source:q.timestamp}))}, error=>console.warn('CLOB status busy:',error.code));
       await new Promise(r=>setTimeout(r,1000));
     }
   } finally {
