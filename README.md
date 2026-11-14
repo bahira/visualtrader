@@ -68,3 +68,5 @@ L’onglet **Étude 4 h** présente le [replay indépendant des règles Pine et 
 Le [banc de replay HFT](docs/MICROSTRUCTURE.md) compare le carnet, le flux exécuté, les frais et la latence sur des sessions figées. Le [test entrée et sortie maker](docs/MAKER_STUDY.md) mesure aussi le coût des sorties forcées.
 
 Le [replay de cotation simultanée](docs/TWO_SIDED.md) compare le résultat à un inventaire passif et documente le collecteur de données différentielles.
+
+Le [carnet différentiel reconstruit](docs/DEPTH_REPLAY.md) permet de rejouer les réglages figés sur de nouvelles captures.

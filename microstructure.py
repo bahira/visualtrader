@@ -31,6 +31,7 @@ class Tape:
     sells: np.ndarray
     trades: np.ndarray | None = None
     best_ask: np.ndarray | None = None
+    touch_size: np.ndarray | None = None
 
 
 def walk(levels, amount):
@@ -92,6 +93,9 @@ def load(db, session, last_seq, first_seq=0):
         now = max(now,event_time)
         msg = json.loads(message)
         stream, raw = msg['stream'], msg['data']
+        if stream == 'btcusdt@researchGap':
+            last_time = previous_id = None
+            continue
         if stream == 'btcusdt@trade':
             size = float(raw['q'])
             value = -size if raw['m'] else size
@@ -138,14 +142,14 @@ def load(db, session, last_seq, first_seq=0):
         features = (*ratios, book_flow.ratio(now), short.ratio(now), long.ratio(now),
                     ratios[0]*spread/2, spread, mom500, mom2000)
         amount = STAKE/mid
-        rows.append((now,features,mid,walk(asks,amount),walk(bids,amount),span,now-start,bp,ap))
+        rows.append((now,features,mid,walk(asks,amount),walk(bids,amount),span,now-start,bp,ap,(bq,aq)))
     if not rows:
         raise ValueError(f'Session {session} sans carnet valide')
-    ts, features, mids, asks, bids, spans, age, best_bid, best_ask = zip(*rows)
+    ts, features, mids, asks, bids, spans, age, best_bid, best_ask, touch_size = zip(*rows)
     x = np.array(features)
     x[np.array(age) < 2_000] = np.nan
     return Tape(np.array(ts),x,np.array(mids),np.array(asks),np.array(bids),np.array(spans),np.array(best_bid),np.array(sells).reshape(-1,2),
-                np.array(trades).reshape(-1,4),np.array(best_ask))
+                np.array(trades).reshape(-1,4),np.array(best_ask),np.array(touch_size))
 
 
 def opportunities(tape, hold, costs):

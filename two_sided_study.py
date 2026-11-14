@@ -32,7 +32,21 @@ def tick(price, side):
     return (math.floor(units + 1e-7) if side == 1 else math.ceil(units - 1e-7)) * TICK
 
 
-def replay(tape, config, fee_bps=10, latency=250, slip_bps=1):
+def queue_fill(times, prices, quantities, start, end, price, qty, side, ahead):
+    """Credit observed aggressive prints, with no cancellation credit."""
+    touch_volume = through_volume = 0.
+    for i in range(bisect_right(times,start),bisect_left(times,end)):
+        distance = side * (price-prices[i])
+        if distance > 1e-8:
+            through_volume += quantities[i]
+        elif abs(distance) <= 1e-8:
+            touch_volume += quantities[i]
+        if through_volume + max(0,touch_volume-ahead) >= qty:
+            return int(times[i])
+    return None
+
+
+def replay(tape, config, fee_bps=10, latency=250, slip_bps=1, queue_model=False):
     # One unit on each side of the initial inventory. Orders are one fixed unit.
     qty = math.floor(100 / tape.mid[0]*1e8)/1e8
     holdings, initial = 1, 1
@@ -97,7 +111,12 @@ def replay(tape, config, fee_bps=10, latency=250, slip_bps=1):
                 rejects += 1
                 continue
             posts += 1
-            fill = flow_fill(*flow_events,opens,cancel,quote,qty,side==1)
+            touch = tape.best_bid[arrive] if side == 1 else tape.best_ask[arrive]
+            if queue_model and abs(quote-touch) <= 1e-8:
+                ahead = tape.touch_size[arrive,0 if side == 1 else 1]
+                fill = queue_fill(*flow_events,opens,cancel,quote,qty,side,ahead)
+            else:
+                fill = flow_fill(*flow_events,opens,cancel,quote,qty,side==1)
             if fill is not None:
                 events.append((fill,side,quote))
         # A future quote may react to these fills only after the cancellation window ends.
@@ -170,14 +189,37 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--db',type=Path,default=Path('data/live.sqlite'))
     parser.add_argument('--end-seq',type=int,default=END_TEST)
+    parser.add_argument('--frozen',type=Path,help='A previous two-sided report with frozen quote rules')
+    parser.add_argument('--session',type=int,action='append',help='Reconstructed sessions for --frozen')
     parser.add_argument('--out',type=Path,default=Path('data/two-sided.json'))
     args = parser.parse_args()
     db = sqlite3.connect(args.db.resolve().as_uri()+'?mode=ro',uri=True)
     try:
-        last = db.execute('select max(seq) from market where session=5').fetchone()[0]
-        if last is None or not END_VALIDATION < args.end_seq <= last:
-            parser.error('invalid capture boundary for session 5')
-        result = study(db,args.end_seq)
+        if args.frozen:
+            original = json.loads(args.frozen.read_text(encoding='utf8'))
+            sessions = list(dict.fromkeys(args.session or [1]))
+            if any(session <= 0 for session in sessions):
+                parser.error('invalid reconstructed session')
+            blocks = {}
+            for session in sessions:
+                last = db.execute('select max(seq) from market where session=?',(session,)).fetchone()[0]
+                if last is None:
+                    parser.error(f'reconstructed session {session} not found')
+                tape = load(db,session,last)
+                candidates = {}
+                for fee, candidate in original['results'].items():
+                    rules = Quote(**candidate['rule'])
+                    candidates[fee] = {'rule':asdict(rules),
+                        'test':replay(tape,rules,int(fee)),
+                        'queueScenario':replay(tape,rules,int(fee),queue_model=True),
+                        'stress':replay(tape,rules,int(fee),500,2)}
+                blocks[str(session)] = {'lastSeq':last,'results':candidates}
+            result = {'source':str(args.db), 'blocks':blocks}
+        else:
+            last = db.execute('select max(seq) from market where session=5').fetchone()[0]
+            if last is None or not END_VALIDATION < args.end_seq <= last:
+                parser.error('invalid capture boundary for session 5')
+            result = study(db,args.end_seq)
     finally:
         db.close()
     raw = json.dumps(result,indent=2,allow_nan=False)
