@@ -23,3 +23,15 @@ node --test test/polymarket_paper.test.mjs
 ## Fenêtre Windows en direct
 
 Lancer Polymarket.cmd pour afficher la fenêtre native dédiée. Le worker actualise les cotations publiques toutes les quelques secondes. Le compte à rebours est local et se met à jour chaque seconde. Les prix d'achat par part incluent les frais estimés pour 10 parts. Le journal distingue les positions avant échéance, le règlement en attente et le P&L officiel du portefeuille simulé. La courbe conserve les observations du marché courant depuis l'ouverture de la fenêtre.
+## Traçabilité et replay v2
+
+La v2 utilise `data/polymarket-v2` et combine en parts égales les logits du carnet et du proxy BTC. Les variantes ajoutent le momentum puis le skew sur cette référence. La v1 reste séparée. Les fills utilisent le premier état source admissible après le délai simulé et refusent le fill si l’avantage a disparu. Les marchés manqués, abstentions, refus et coûts sont journalisés.
+
+Sur le graphique Polymarket, survoler un marqueur révèle sa décision. Un double-clic sur un trade ouvre le marché historique, avec les points réellement enregistrés et ses marqueurs. **Revenir au direct** rétablit le marché courant. Les graphiques Binance 1 s et Time signalent les fills des portefeuilles Actif, Rapide et Phoenix.
+
+```powershell
+node poly_replay.mjs data/polymarket-v2/paper.sqlite
+python -B polymarket_audit.py --db data/polymarket-v2/paper.sqlite
+```
+
+Le replay recalcule les features, probabilités, motifs et fills depuis les chandelles et snapshots REST archivés. Les lignes dépourvues de l’heure exacte du calcul sont recensées à part. Le journal de décision est écrit dans la même transaction que ses entrées brutes. Les snapshots REST ne reproduisent ni le flux CLOB exhaustif ni une exécution réelle. Le TWAP Chainlink exact via PolyBolt demande une authentification. Binance reste le proxy, et le règlement officiel reste la source des paiements.

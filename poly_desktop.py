@@ -12,7 +12,14 @@ from desktop import configure_dpi, money
 BG, PANEL, BORDER = '#101721', '#172332', '#2b3c50'
 FG, MUTED, GREEN, RED, AMBER = '#f1f5fa', '#b1bfd1', '#76e5bf', '#ff9e9f', '#f5c975'
 NAMES = {'anchor':'Proxy BTC','momentum':'Momentum','skew':'Quant Skew'}
-DEFAULT_PATH = Path(__file__).resolve().parent / 'data/polymarket/status.json'
+DEFAULT_PATH = Path(__file__).resolve().parent / 'data/polymarket-v2/status.json'
+
+
+def readable(value):
+    try:
+        return value.encode('cp1252').decode('utf8')
+    except (UnicodeEncodeError,UnicodeDecodeError):
+        return value
 
 
 def timestamp(ms):
@@ -82,6 +89,10 @@ class Dashboard:
         self.chart = tk.Canvas(chart_panel,bg=PANEL,highlightthickness=0,height=90)
         self.chart.pack(fill='both',expand=True)
         self.chart.bind('<Configure>',lambda _: self.draw())
+        self.chart.bind('<Motion>', self.inspect_marker)
+        self.chart.bind('<Leave>', lambda _: self.chart.delete('trade-tooltip'))
+        self.markers = []
+        self.review_trial = None
         self.signal = self.label(outer,'—',MUTED,10)
         self.signal.grid(row=4,column=0,sticky='ew',pady=(4,2))
         self.positions = self.label(outer,'',FG,10,True)
@@ -92,6 +103,10 @@ class Dashboard:
                                  (155,105,82,85,98,75),4)
         self.journal = self.table('Trades simulés',('Heure','Modèle','Côté','Prix moy.','Frais USD','État / Net USD'),
                                   (75,130,65,85,90,150),4)
+        self.decisions = self.table('Décision',('Modèle','Côté','Prob.','Coût / part','Edge','Motif'),
+                                   (126,55,65,86,63,215),4)
+        self.journal.bind('<Double-1>',self.review_selected)
+        self.live = ttk.Button(header,text='Revenir au direct',command=self.return_live)
         self.tabs.bind('<<NotebookTabChanged>>',lambda _: self.render_tables())
         self.refresh()
 
@@ -155,7 +170,7 @@ class Dashboard:
         prob = current.get('prob') or {}
         self.cards['skew'].configure(text=money(prob['skew']*100,1)+' %' if fresh and 'skew' in prob else '—')
         f = current.get('features') or {}
-        signal = current.get('state','En attente du worker')
+        signal = readable(current.get('state','En attente du worker'))
         if fresh and f:
             signal += f"   ·   Momentum {f['momentum']*10000:+.2f} pb   ·   Skew {f['skew']:+.2f}"
         signal += f"   ·   {self.state.get('resolved',0)} / {self.state.get('evaluated',0)} marchés réglés"
@@ -163,8 +178,14 @@ class Dashboard:
         item = self.state.get('summary',{}).get('skew',{})
         pending = item.get('trades',0) - item.get('settled',0)
         net = money(item.get('net'),4) + ' $' if item.get('settled') else '—'
-        self.positions.configure(text=f'Quant Skew   ·   P&L réglé  {net}   ·   {pending} position(s) non réglée(s)')
-        if fresh and qt != self.quote_time and 'skew' in prob and prob.get('market') is not None:
+        paired = self.state.get('paired',{})
+        missed = self.state.get('coverage',{}).get('missed',0)
+        self.positions.configure(text=f"Skew net {net}   ·   Ouvert {pending} / {money(item.get('openCost'),2)} $"
+                                 f"   ·   Δ vs Momentum {money(paired.get('skewNet'),2)} $   ·   Ratés {missed}")
+        if 'history' in self.state:
+            self.history = [(r['time'],r['skew'],r['market']) for r in self.state['history']
+                            if r['market'] is not None]
+        elif fresh and qt != self.quote_time and 'skew' in prob and prob.get('market') is not None:
             self.quote_time = qt
             self.history.append((qt,prob['skew'],prob['market']))
             self.history = self.history[-80:]
@@ -178,6 +199,7 @@ class Dashboard:
     def draw(self):
         canvas = self.chart
         canvas.delete('all')
+        self.markers.clear()
         w,h = canvas.winfo_width(),canvas.winfo_height()
         if w < 100 or h < 45:
             return
@@ -185,22 +207,106 @@ class Dashboard:
             y = (h-30)*(1-level)+5
             canvas.create_line(11,y,w-42,y,fill=BORDER,dash=(3,5))
             canvas.create_text(w-6,y,text=f'{level:.0%}',fill=MUTED,anchor='e')
-        if not self.history:
-            canvas.create_text(w/2,h/2,text='En attente des premières cotations',fill=MUTED)
+        if not self.market:
             return
-        start = int(self.market.rsplit('-',1)[-1])*1000
+        trial = self.review_trial or next((r for r in self.state.get('journal',[])
+                                          if r['slug']==self.market),None)
+        history = self.history
+        if self.review_trial:
+            history = self.review_trial.get('history',[])
+        start = int((trial['slug'] if self.review_trial else self.market).rsplit('-',1)[-1])*1000
+        if not history and not trial:
+            canvas.create_text(w/2,h/2,text='En attente des premières cotations',fill=MUTED)
         for index,color in ((1,AMBER),(2,'#91add4')):
             coords = []
-            for sample in self.history:
+            for sample in history:
                 x = 12+(w-60)*min(1,max(0,(sample[0]-start)/300000))
                 y = (h-30)*(1-sample[index])+5
                 coords.extend((x,y))
             if len(coords) >= 4:
                 canvas.create_line(*coords,fill=color,width=2)
-            x,y = coords[-2:]
-            canvas.create_oval(x-3,y-3,x+3,y+3,outline='',fill=color)
+            if coords:
+                x,y = coords[-2:]
+                canvas.create_oval(x-3,y-3,x+3,y+3,outline='',fill=color)
         canvas.create_text(11,h-11,text='Ouverture',fill=MUTED,anchor='w')
         canvas.create_text(w-42,h-11,text='Échéance',fill=MUTED,anchor='e')
+        if trial:
+            for offset,(name,label) in enumerate(NAMES.items()):
+                fill = (trial.get('fills') or {}).get(name)
+                reason = (trial.get('reasons') or {}).get(name)
+                if not fill and not reason:
+                    continue
+                t = fill.get('time',trial['time']) if fill else trial['time']
+                x = 12+(w-60)*min(1,max(0,(t-start)/300000))
+                y = 16 + offset*20
+                color = (GREEN if fill['side']==0 else RED) if fill else MUTED
+                if fill:
+                    canvas.create_polygon(x,y-5,x+5,y,x,y+5,x-5,y,fill=color,outline=FG)
+                else:
+                    canvas.create_oval(x-4,y-4,x+4,y+4,outline=color,width=2)
+                canvas.create_text(x+10,y,text=label,fill=color,anchor='w',font=('Segoe UI',8,'bold'))
+                side = fill['side'] if fill else reason.get('side')
+                lines = [f"{label}  ·  {timestamp(t)}",
+                         ('Up' if side==0 else 'Down' if side==1 else '—') + ' · ' + (readable(reason['reason']) if reason else 'Fill simulé')]
+                if reason and reason.get('prob') is not None:
+                    lines.append(f"Prob. {reason['prob']:.1%} · edge signal {reason['signalEdge']*100:+.1f} ¢")
+                if fill:
+                    lines.append(f"Coût {fill['total']:.4f} $ · frais {fill['fees']:.4f} $")
+                    if trial['winner'] is not None:
+                        paid = 10 if trial['winner']==side else 0
+                        lines.append(f"P&L réglé {paid-fill['total']:+.4f} $")
+                self.markers.append((x,y,'\n'.join(lines)))
+
+    def inspect_marker(self,event):
+        canvas = self.chart
+        canvas.delete('trade-tooltip')
+        if not self.markers:
+            return
+        x,y,detail = min(self.markers,key=lambda r:(event.x-r[0])**2+(event.y-r[1])**2)
+        if abs(event.y-y)>9 or not x-9<=event.x<=x+96:
+            return
+        w,h = canvas.winfo_width(),canvas.winfo_height()
+        item = canvas.create_text(0,0,text=detail,anchor='nw',fill=FG,
+                                  font=('Segoe UI',9),tags='trade-tooltip')
+        _,_,right,bottom = canvas.bbox(item)
+        tx,ty = max(9,min(event.x+14,w-right-10)),max(9,min(event.y+14,h-bottom-10))
+        canvas.coords(item,tx,ty)
+        left,top,right,bottom = canvas.bbox(item)
+        shade = canvas.create_rectangle(left-6,top-4,right+6,bottom+4,fill=BG,
+                                        outline=BORDER,tags='trade-tooltip')
+        canvas.tag_lower(shade,item)
+
+    def review_selected(self, event):
+        item = self.journal.identify_row(event.y)
+        if not item:
+            return
+        index = self.journal.index(item)
+        if index >= len(self.trade_trials):
+            return
+        import sqlite3
+        trial = self.trade_trials[index].copy()
+        db_path = self.path.with_name('paper.sqlite')
+        try:
+            db = sqlite3.connect(db_path.resolve().as_uri()+'?mode=ro',uri=True,timeout=.2)
+            try:
+                trial['history'] = list(db.execute(
+                    'SELECT time,skew,market FROM chart WHERE start=? AND market IS NOT NULL ORDER BY time',
+                    (trial['start'],)))
+            finally:
+                db.close()
+        except sqlite3.Error:
+            trial['history'] = []
+        self.review_trial = trial
+        self.live.pack(side='right',padx=10)
+        self.caption.configure(text=f"Replay · {timestamp(trial['start'])} · Or : Skew · Bleu : carnet")
+        self.draw()
+
+    def return_live(self):
+        self.review_trial = None
+        self.live.pack_forget()
+        self.caption.configure(text='Probabilité Up   ·   Or : Quant Skew   ·   Bleu : carnet')
+        self.draw()
+
 
     def render_tables(self):
         model_rows = []
@@ -212,8 +318,10 @@ class Dashboard:
                     (label,f"{item['trades']} / {item['settled']}",item['wins'],money(item['fees'],4),
                      money(net,4) if item['settled'] else '—',money(item['brier'],4))))
         trades = []
+        self.trade_trials = []
         for trial in self.state.get('journal',[]):
             for key,fill in trial['fills'].items():
+                self.trade_trials.append(trial)
                 winner = trial['winner']
                 net = None if winner is None else (10 if winner==fill['side'] else 0)-fill['total']
                 tag = 'open' if net is None else 'win' if net>0 else 'loss'
@@ -221,7 +329,16 @@ class Dashboard:
                 trades.append((tag,(timestamp(trial['time']),NAMES.get(key,key),
                     'Up' if fill['side']==0 else 'Down',money(fill['average']*100,1)+' ¢',
                     money(fill['fees'],4),pending if net is None else f'{net:+.4f} $')))
-        for tree,rows in ((self.models,model_rows),(self.journal,trades)):
+        decisions = []
+        for trial in self.state.get('journal',[])[:1]:
+            for key,result in (trial.get('reasons') or {}).items():
+                side = result.get('side')
+                pct = lambda v: money(v*100,1) if v is not None else '—'
+                decisions.append(('',(NAMES[key],'Up' if side==0 else 'Down' if side==1 else '—',
+                     pct(result.get('prob')),pct(result.get('cost')),pct(result.get('signalEdge')),readable(result['reason']))))
+        for gap in self.state.get('misses',[])[:4]:
+            decisions.append(('open',(timestamp(gap['start']),'—','—','—','—',readable(gap['detail']))))
+        for tree,rows in ((self.models,model_rows),(self.journal,trades),(self.decisions,decisions)):
             ids = tree.get_children()
             for i,(tag,row) in enumerate(rows):
                 if i < len(ids):

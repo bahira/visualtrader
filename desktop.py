@@ -80,6 +80,7 @@ class Desktop:
         self.connected = False
         self.view = '1 s'
         self.chart_key = None
+        self.action_markers = []
         self.table_key = None
         self.result = 1
         root.configure(bg=BG)
@@ -509,7 +510,7 @@ class Desktop:
             table.delete(*children[len(rows):])
 
     def polymarket_rows(self):
-        path = Path(__file__).resolve().parent / 'data' / 'polymarket' / 'status.json'
+        path = Path(__file__).resolve().parent / 'data' / 'polymarket-v2' / 'status.json'
         try:
             state = json.loads(path.read_text(encoding='utf8'))
         except (OSError, ValueError):
@@ -569,7 +570,10 @@ class Desktop:
         else:
             data = candles
         data = data[-limit:]
-        key = self.view, self.range_var.get(), data
+        entries = [(name,fill) for name,fills in (
+            ('Actif',s['fills']),('Rapide',s.get('fast',{}).get('recent',[])),
+            ('Phoenix',s.get('phoenix',{}).get('recent',[]))) for fill in fills]
+        key = self.view, self.range_var.get(), data, entries
         if key == self.chart_key:
             return
         self.chart_key = key
@@ -577,6 +581,7 @@ class Desktop:
         chart.delete('all')
         self.points.clear()
         self.cursor.clear()
+        self.action_markers.clear()
         w, h = chart.winfo_width(), chart.winfo_height()
         usable = [item for item in data if item['c'] is not None]
         if not usable or w < 120 or h < 85:
@@ -654,6 +659,21 @@ class Desktop:
         if len(self.points) == 1:
             x, y, _ = self.points[0]
             chart.create_oval(x - 2, y - 2, x + 2, y + 2, fill=UP, outline='')
+        if self.view != 'Capital':
+            cutoff = end+(60000 if self.view=='Time' else 1000)
+            for name,fill in entries:
+                t = fill['time']
+                if not start <= t < cutoff:
+                    continue
+                x = left+8 + (right-left-16)*(min(end,t)-start)/max(1,end-start)
+                y = max(top+8,min(bottom-8,ordinate(fill['price'])))
+                buy = fill['side']=='BUY'
+                color = UP if buy else DOWN
+                d = 1 if buy else -1
+                chart.create_polygon(x,y-6*d,x+6,y+5*d,x-6,y+5*d,fill=color,outline=FG)
+                desc = (f"{name} · {fill['side']} · {clock(t)}   {money(fill['price'])} USDT"
+                        f"   Frais {money(fill['fee'],4)}   {fill['latencyMs']} ms")
+                self.action_markers.append((x,y,desc))
         self.describe(last)
         if self.hover is not None:
             self.inspect_point(self.hover)
@@ -670,6 +690,20 @@ class Desktop:
 
     def inspect(self, event):
         self.inspect_point(event.x)
+        hits = [r for r in self.action_markers if abs(r[0]-event.x)<8 and abs(r[1]-event.y)<8]
+        if hits:
+            self.detail.configure(text=hits[0][2])
+        self.chart.delete('fill-tooltip')
+        if hits:
+            item = self.chart.create_text(0,0,text=hits[0][2],anchor='nw',fill=FG,
+                                          font=self.axis,tags='fill-tooltip')
+            _,_,width,height = self.chart.bbox(item)
+            x = max(8,min(event.x+10,self.chart.winfo_width()-width-8))
+            y = max(8,min(event.y+10,self.chart.winfo_height()-height-8))
+            self.chart.coords(item,x,y)
+            l,t,r,b = self.chart.bbox(item)
+            box = self.chart.create_rectangle(l-4,t-3,r+4,b+3,fill=BG,outline=GRID,tags='fill-tooltip')
+            self.chart.tag_lower(box,item)
 
     def inspect_point(self, position):
         if not self.points:
@@ -690,6 +724,7 @@ class Desktop:
         self.describe(item)
 
     def clear_cursor(self, _event=None):
+        self.chart.delete('fill-tooltip')
         self.hover = None
         for item in self.cursor:
             self.chart.delete(item)

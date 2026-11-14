@@ -11,7 +11,8 @@ const PERIOD = 300_000;
 const LATENCY = 500;
 const SHARES = 10;
 const EDGE = .04;
-const POLICY = 'v1:120s:500ms:10shares:4c';
+const MODELS = ['anchor','momentum','skew','market'];
+const POLICY = 'v2:120s:500ms:fresh-source:10shares:4c:market-logit-blend';
 
 async function get(url) {
   const response = await fetch(url,{signal:AbortSignal.timeout(6500)});
@@ -60,7 +61,7 @@ export function features(candles,start,now) {
   const momentum = Math.log(price/Number(tail[0][4]));
   const anchor = Number(opening[1]);
   if (![price,momentum,anchor,up,down].every(Number.isFinite) || price<=0 || anchor<=0) return null;
-  return {momentum,skew:up+down ? (up-down)/(up+down) : 0,
+  return {price,anchor,momentum,skew:up+down ? (up-down)/(up+down) : 0,
     distance:Math.log(price/anchor), sigma:Math.sqrt((up+down)/30), sample:tail.at(-1)[6]};
 }
 
@@ -101,14 +102,63 @@ function rules(prob,quotes) {
     .filter(row=>row.edge>=EDGE).sort((a,b)=>b.edge-a.edge)[0];
 }
 
+export function freshExecution(fill, initial, execution) {
+  return Boolean(fill && execution.time >= initial.time+LATENCY && execution.time-fill.age >= initial.time+LATENCY);
+}
+
+export function blend(proxy, benchmark) {
+  const logit = p => Math.log(p/(1-p));
+  return 1/(1+Math.exp(-(.5*logit(proxy)+.5*logit(benchmark))));
+}
+
+export function evaluateExecution(prob,initial,attempts,deadline) {
+  const decisions = Object.fromEntries(MODELS.slice(0,3).map(name=>[name,rules(prob[name],initial.quotes)]));
+  const fills = {}, reasons = {};
+  for (const [name,choice] of Object.entries(decisions)) {
+    if (!choice) {
+      const sides = initial.quotes.map((q,side)=>({side,prob:side===0?prob[name]:1-prob[name],
+        cost:q.total/SHARES}));
+      sides.sort((a,b)=>(b.prob-b.cost)-(a.prob-a.cost));
+      const best = sides[0];
+      reasons[name] = {...best,signalEdge:best.prob-best.cost,reason:'Avantage sous le seuil'};
+      continue;
+    }
+    const observed = attempts.find(book=>book.time < deadline &&
+      freshExecution(book.quotes[choice.side],initial,book));
+    const fill = observed?.quotes[choice.side];
+    const edge = fill ? choice.prob-fill.total/SHARES : null;
+    reasons[name] = {side:choice.side,prob:choice.prob,signalEdge:choice.edge,cost:initial.quotes[choice.side].total/SHARES,fillEdge:edge,
+      delayMs:observed ? observed.time-initial.time : null,
+      reason:edge === null ? 'Aucun carnet post-latence' : edge < EDGE ? 'Avantage disparu' : 'Fill simulé'};
+    if (edge !== null && edge >= EDGE) fills[name] = {...fill,side:choice.side,time:observed.time};
+  }
+  return {fills,reasons};
+}
+
+export function replayEvidence(evidence) {
+  const {market:m,candles,initial,attempts} = evidence;
+  const restored = book => ({time:book.time,quotes:book.raw.map((raw,i)=>
+    quote(raw,m.tokens[i],m.condition,SHARES,m.rate,book.time))});
+  const start = m.ends-PERIOD;
+  // Legacy v2 stored the derived features but omitted the exact feature evaluation time.
+  // New rows store it explicitly so a just-closed candle cannot leak into the replay.
+  const f = features(candles,start,evidence.featureTime);
+  const first = restored(initial);
+  if (!f || !first.quotes.every(Boolean)) throw new Error('Incomplete decision evidence');
+  const prob = estimate(f,(m.ends-first.time)/1000);
+  prob.market = first.quotes[0].average/(first.quotes[0].average+first.quotes[1].average);
+  for (const name of MODELS.slice(0,3)) prob[name] = blend(prob[name],prob.market);
+  return {features:f,prob,initial:first,...evaluateExecution(prob,first,attempts.map(restored),start+138_000)};
+}
+
 async function books(m) {
   const raw = await Promise.all(m.tokens.map(token=>get(BOOK+token)));
   const now = Date.now();
-  return {time:now, quotes:raw.map((book,i)=>quote(book,m.tokens[i],m.condition,SHARES,m.rate,now))};
+  return {time:now, raw, quotes:raw.map((book,i)=>quote(book,m.tokens[i],m.condition,SHARES,m.rate,now))};
 }
 
 async function main() {
-  const {values:{directory}} = parseArgs({options:{directory:{type:'string',default:'data/polymarket'}}});
+  const {values:{directory}} = parseArgs({options:{directory:{type:'string',default:'data/polymarket-v2'}}});
   const dir = resolve(directory);
   mkdirSync(dir,{recursive:true});
   const lock = new DatabaseSync(resolve(dir,'collector.lock.sqlite'));
@@ -116,27 +166,46 @@ async function main() {
   const db = new DatabaseSync(resolve(dir,'paper.sqlite'));
   db.exec(`PRAGMA journal_mode=WAL;
     CREATE TABLE IF NOT EXISTS trials(start INTEGER PRIMARY KEY,slug TEXT,condition TEXT,time INTEGER,record TEXT,winner INTEGER);
+    CREATE TABLE IF NOT EXISTS coverage(start INTEGER PRIMARY KEY,state TEXT,detail TEXT);
+    CREATE TABLE IF NOT EXISTS evidence(start INTEGER PRIMARY KEY, record TEXT);
+    CREATE TABLE IF NOT EXISTS chart(start INTEGER,time INTEGER,skew REAL,market REAL,PRIMARY KEY(start,time));
     CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT);`);
   db.prepare('INSERT OR IGNORE INTO metadata VALUES(?,?)').run('policy',POLICY);
   if (db.prepare("SELECT value FROM metadata WHERE key='policy'").get().value !== POLICY) {
     throw new Error('Policy changed. Use a new directory.');
   }
-  let lastError = null, current = null, lastSettlement = 0, running = true;
-  const names = ['anchor','momentum','skew','market'];
+  let lastError = null, current = null, lastSettlement = 0, running = true, settling = false;
+  const lastCovered = db.prepare('SELECT MAX(start) AS start FROM coverage').get().start;
+  let coverageCursor = lastCovered == null ? null : lastCovered+PERIOD;
+  const misses = db.prepare("SELECT start,detail FROM coverage WHERE state='missed' ORDER BY start DESC LIMIT 12");
+  let failureReason = 'Worker indisponible pendant la fenêtre';
+  const names = MODELS;
   const findTrial = db.prepare('SELECT record FROM trials WHERE start=?');
-  const due = db.prepare('SELECT start,slug,condition FROM trials WHERE winner IS NULL AND start<=? ORDER BY start LIMIT 8');
+  const due = db.prepare('SELECT start,slug,condition FROM trials WHERE winner IS NULL AND start<=? ORDER BY start LIMIT 100');
   const settle = db.prepare('UPDATE trials SET winner=? WHERE start=? AND winner IS NULL');
   const journal = db.prepare('SELECT start,slug,time,record,winner FROM trials ORDER BY start DESC LIMIT 24');
   let preview = null, meta = null;
+  const cover = db.prepare('INSERT OR REPLACE INTO coverage VALUES(?,?,?)');
+  const plot = db.prepare('INSERT OR IGNORE INTO chart VALUES(?,?,?,?)');
+  const chart = db.prepare('SELECT time,skew,market FROM chart WHERE start=? ORDER BY time');
+  const archive = db.prepare('INSERT OR REPLACE INTO evidence VALUES(?,?)');
   const add = db.prepare('INSERT INTO trials(start,slug,condition,time,record) VALUES(?,?,?,?,?)');
   for (const sig of ['SIGINT','SIGTERM']) process.on(sig,()=>{running=false;});
   function status() {
-    const summary = Object.fromEntries(names.map(name=>[name,{trades:0,settled:0,wins:0,fees:0,net:0,brier:null}]));
+    const coverage = Object.fromEntries(db.prepare('SELECT state,count(*) AS n FROM coverage GROUP BY state').all().map(r=>[r.state,r.n]));
+    const paired = {skewChanged:0,skewNet:0,compared:0};
+    const summary = Object.fromEntries(names.map(name=>[name,{trades:0,settled:0,wins:0,fees:0,openCost:0,net:0,brier:null}]));
     let evaluated = 0, resolved = 0;
     for (const row of db.prepare('SELECT record,winner FROM trials').iterate()) {
       const trial = JSON.parse(row.record);
       evaluated++;
-      if (row.winner !== null) resolved++;
+      if (trial.fills.skew?.side !== trial.fills.momentum?.side) paired.skewChanged++;
+      if (row.winner !== null) {
+        resolved++;
+        paired.compared++;
+        const pnl = fill => fill ? (fill.side===row.winner ? SHARES : 0)-fill.total : 0;
+        paired.skewNet += pnl(trial.fills.skew)-pnl(trial.fills.momentum);
+      }
       for (const name of names) {
         const result = summary[name];
         if (row.winner !== null && trial.prob[name] !== null) {
@@ -147,7 +216,7 @@ async function main() {
         if (!fill) continue;
         result.trades++;
         result.fees += fill.fees;
-        if (row.winner === null) continue;
+        if (row.winner === null) { result.openCost += fill.total; continue; }
         result.settled++;
         result.wins += Number(fill.side===row.winner);
         result.net += (fill.side===row.winner ? SHARES : 0)-fill.total;
@@ -156,26 +225,47 @@ async function main() {
     for (const result of Object.values(summary)) if (result.samples) result.brier /= result.samples;
     const temporary = resolve(dir,'status.tmp');
     writeFileSync(temporary,JSON.stringify({policy:POLICY,checked:new Date().toISOString(),
-      current,lastError,evaluated,resolved,summary,
+      current,lastError,evaluated,resolved,summary,coverage,paired,misses:misses.all(),
+      history:current ? chart.all(Number(current.slug.split('-').at(-1))*1000) : [],
       journal:journal.all().map(({record,winner,...row})=>{
         const trial = JSON.parse(record);
-        return {...row,winner,prob:trial.prob,fills:trial.fills};
+        return {...row,winner,prob:trial.prob,fills:trial.fills,reasons:trial.reasons};
       })},null,2));
     renameSync(temporary,resolve(dir,'status.json'));
   }
+  let settlementCursor = -1;
+  async function resolveDue(now) {
+    if (settling || now-lastSettlement < 20_000) return;
+    settling = true;
+    lastSettlement = now;
+    try {
+      const pending = due.all(now-PERIOD-30_000);
+      const batch = [...pending.filter(row=>row.start>settlementCursor),
+        ...pending.filter(row=>row.start<=settlementCursor)].slice(0,4);
+      const values = await Promise.allSettled(batch.map(async row=>[row,winner(await get(GAMMA+row.slug),row.condition)]));
+      if (!running) return;
+      for (const answer of values) {
+        if (answer.status !== 'fulfilled') continue;
+        const [row,side] = answer.value;
+        if (side !== null) settle.run(side,row.start);
+      }
+      if (batch.length) settlementCursor=batch.at(-1).start;
+    } finally { settling = false; }
+  }
+
   async function run() {
     const now = Date.now();
     const start = now-now%PERIOD;
     const slug = 'btc-updown-5m-'+start/1000;
     current = {slug,secondsToEnd:Math.ceil((start+PERIOD-now)/1000),state:'Attente du point de décision'};
-    if (now-lastSettlement >= 20_000) {
-      lastSettlement = now;
-      for (const row of due.all(now-PERIOD-30_000)) {
-        try {
-          const side = winner(await get(GAMMA+row.slug),row.condition);
-          if (side !== null) settle.run(side,row.start);
-        } catch (error) { lastError = String(error.message); }
-      }
+    void resolveDue(now);
+    coverageCursor ??= start;
+    const eligible = now-start >= 138_000 ? start : start-PERIOD;
+    while (coverageCursor <= eligible) {
+      if (!findTrial.get(coverageCursor)) cover.run(coverageCursor,'missed',
+        coverageCursor === start ? failureReason : 'Fenêtre sans décision');
+      coverageCursor += PERIOD;
+      failureReason = 'Worker indisponible pendant la fenêtre';
     }
     const saved = findTrial.get(start);
     const inWindow = now-start >= 120_000 && now-start < 138_000;
@@ -193,9 +283,10 @@ async function main() {
     const [raw,candles] = await Promise.all([refresh ? get(GAMMA+slug) : null,get(BINANCE)]);
     if (raw) meta = {slug,time:Date.now(),market:market(raw,start)};
     const m = meta?.market;
-    const f = features(candles,start,Date.now());
+    const featureTime = Date.now();
+    const f = features(candles,start,featureTime);
     if (!m?.accepting || !f) {
-      if (deciding) current.state='Marché ou proxy BTC indisponible';
+      if (deciding) failureReason = current.state='Marché ou proxy BTC indisponible';
       return;
     }
     const initial = await books(m);
@@ -204,32 +295,46 @@ async function main() {
     const complete = initial.quotes.every(Boolean);
     prob.market = complete
       ? initial.quotes[0].average/(initial.quotes[0].average+initial.quotes[1].average) : null;
-    preview = {slug,time:initial.time,data:{features:f,prob,quotes:initial.quotes,
+    preview = {slug,time:initial.time,data:{features:f,prob:Object.fromEntries(names.map(name=>[name, name!=='market' && complete ? blend(prob[name],prob.market) : prob[name]])),quotes:initial.quotes,
       quoteTime:initial.time,ends:m.ends}};
     Object.assign(current,preview.data);
+    if (initial.time < m.ends) plot.run(start,initial.time,preview.data.prob.skew,prob.market);
     if (!deciding || initial.time >= start+138_000) return;
-    if (!complete) { current.state='Carnet incomplet'; return; }
+    if (!complete) { failureReason = current.state='Carnet incomplet'; return; }
+    for (const name of names.slice(0,3)) prob[name] = blend(prob[name],prob.market);
     const decisions = Object.fromEntries(names.slice(0,3).map(name=>[name,rules(prob[name],initial.quotes)]));
     let execution = null;
+    const attempts = [];
     if (Object.values(decisions).some(Boolean)) {
       await new Promise(resolve=>setTimeout(resolve,LATENCY));
-      execution = await books(m);
+      const selected = [...new Set(Object.values(decisions).filter(Boolean).map(x=>x.side))];
+      try {
+        for (let i=0;i<4;i++) {
+          if (Date.now() >= start+138_000) break;
+          execution = await books(m);
+          attempts.push(execution);
+          if (selected.every(side=>freshExecution(execution.quotes[side],initial,execution))) break;
+          await new Promise(resolve=>setTimeout(resolve,250));
+        }
+      } catch (error) { failureReason = error.message; }
     }
-    const fills = {};
-    for (const [name,choice] of Object.entries(decisions)) {
-      if (!choice || !execution || execution.time >= start+138_000) continue;
-      const fill = execution.quotes[choice.side];
-      if (fill && choice.prob - fill.total/SHARES >= EDGE) fills[name] = {...fill,side:choice.side};
-    }
-    const record = {features:f,prob,initial,execution,fills,rate:m.rate};
-    add.run(start,slug,m.condition,initial.time,JSON.stringify(record));
+    const {fills,reasons} = evaluateExecution(prob,initial,attempts,start+138_000);
+    const compact = book => book && {time:book.time,quotes:book.quotes};
+    const record = {features:f,prob,initial:compact(initial),execution:compact(execution),fills,rate:m.rate,reasons};
+    db.exec('BEGIN');
+    try {
+      add.run(start,slug,m.condition,initial.time,JSON.stringify(record));
+      archive.run(start,JSON.stringify({market:m,candles,initial,attempts,featureTime}));
+      cover.run(start,'evaluated','');
+      db.exec('COMMIT');
+    } catch (error) { db.exec('ROLLBACK'); throw error; }
     Object.assign(current,{state:Object.keys(fills).length ? 'Trade simulé enregistré' : 'Abstention enregistrée',
       decision:record});
   }
   try {
     while (running) {
       lastError = null;
-      try { await run(); } catch (error) { lastError=String(error.message); }
+      try { await run(); } catch (error) { lastError=String(error.message); failureReason=lastError; }
       status();
       await new Promise(resolve=>setTimeout(resolve,2500));
     }
