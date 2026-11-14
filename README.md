@@ -65,4 +65,4 @@ L’onglet **Étude 4 h** présente le [replay indépendant des règles Pine et 
 
 ## Recherche microstructure
 
-Le [banc de replay HFT](docs/MICROSTRUCTURE.md) compare le carnet, le flux exécuté, les frais et la latence sur des sessions figées.
+Le [banc de replay HFT](docs/MICROSTRUCTURE.md) compare le carnet, le flux exécuté, les frais et la latence sur des sessions figées. Le [test entrée et sortie maker](docs/MAKER_STUDY.md) mesure aussi le coût des sorties forcées.

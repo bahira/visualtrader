@@ -29,6 +29,8 @@ class Tape:
     span: np.ndarray
     best_bid: np.ndarray
     sells: np.ndarray
+    trades: np.ndarray | None = None
+    best_ask: np.ndarray | None = None
 
 
 def walk(levels, amount):
@@ -72,7 +74,7 @@ class Window:
         return self.net / self.total if self.events and self.total > 0 else 0.
 
 
-def load(db, session, last_seq):
+def load(db, session, last_seq, first_seq=0):
     def windows():
         return Window(500), Window(2000), Window(500)
 
@@ -83,15 +85,17 @@ def load(db, session, last_seq):
     small = deque()
     rows = []
     sells = []
+    trades = []
     now = 0
     for event_time, message in db.execute(
-            'SELECT recv,json FROM market WHERE session=? AND seq<=? ORDER BY seq', (session,last_seq)):
+            'SELECT recv,json FROM market WHERE session=? AND seq>? AND seq<=? ORDER BY seq', (session,first_seq,last_seq)):
         now = max(now,event_time)
         msg = json.loads(message)
         stream, raw = msg['stream'], msg['data']
         if stream == 'btcusdt@trade':
             size = float(raw['q'])
             value = -size if raw['m'] else size
+            trades.append((now,float(raw['p']),size,int(raw['m'])))
             if raw['m']:
                 sells.append((now,float(raw['p'])))
             short.push(now,value,size)
@@ -134,13 +138,14 @@ def load(db, session, last_seq):
         features = (*ratios, book_flow.ratio(now), short.ratio(now), long.ratio(now),
                     ratios[0]*spread/2, spread, mom500, mom2000)
         amount = STAKE/mid
-        rows.append((now,features,mid,walk(asks,amount),walk(bids,amount),span,now-start,bp))
+        rows.append((now,features,mid,walk(asks,amount),walk(bids,amount),span,now-start,bp,ap))
     if not rows:
         raise ValueError(f'Session {session} sans carnet valide')
-    ts, features, mids, asks, bids, spans, age, best_bid = zip(*rows)
+    ts, features, mids, asks, bids, spans, age, best_bid, best_ask = zip(*rows)
     x = np.array(features)
     x[np.array(age) < 2_000] = np.nan
-    return Tape(np.array(ts),x,np.array(mids),np.array(asks),np.array(bids),np.array(spans),np.array(best_bid),np.array(sells).reshape(-1,2))
+    return Tape(np.array(ts),x,np.array(mids),np.array(asks),np.array(bids),np.array(spans),np.array(best_bid),np.array(sells).reshape(-1,2),
+                np.array(trades).reshape(-1,4),np.array(best_ask))
 
 
 def opportunities(tape, hold, costs):
@@ -266,14 +271,14 @@ def replay(db, train_ids, validation_id, test_ids, frozen=None):
     if frozen is not None:
         bounds = {i:min(bounds[i],frozen[i]) if bounds[i] else None for i in sessions}
     if not all(bounds.values()):
-        raise ValueError('Une session demandÃ©e est absente')
+        raise ValueError('Une session demandÃƒÂ©e est absente')
     tapes = {i:load(db,i,bounds[i]) for i in sessions}
     train = [tapes[i] for i in train_ids]
     candidates = []
     for hold in HORIZONS:
         reg = model(train,hold)
         candidates.extend(Candidate('Ridge',hold,v,reg) for v in (.25,.5,1,2,4,8,15,22))
-        for name,feature in (('Queue 1',0),('Queue 5',1),('Snapshot OFI',3),('Flux exÃ©cutÃ©',5)):
+        for name,feature in (('Queue 1',0),('Queue 5',1),('Snapshot OFI',3),('Flux exÃƒÂ©cutÃƒÂ©',5)):
             candidates.extend(Candidate(name,hold,v,lambda tape, f=feature:tape.features[:,f])
                               for v in (.25,.5,.75,.9))
     validation = tapes[validation_id]
@@ -291,7 +296,7 @@ def replay(db, train_ids, validation_id, test_ids, frozen=None):
     chosen = max(candidates,key=research_score)
     selection = evaluate(chosen,validation,BASE)
     qualified = selection['cycles'] >= 15 and selection['censoredPaths'] == 0 and selection['netUsdt'] > 0 and evaluate(chosen,validation,STRESS)['netUsdt'] > 0
-    baseline = Candidate('RÃ©gulier',3000,0,lambda tape:np.zeros(len(tape.time)))
+    baseline = Candidate('RÃƒÂ©gulier',3000,0,lambda tape:np.zeros(len(tape.time)))
     results = {}
     for session in test_ids:
         tape = tapes[session]
