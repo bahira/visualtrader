@@ -40,6 +40,17 @@ export function walk(levels, quantity) {
   return null;
 }
 
+function quantityForBudget(levels, notional) {
+  let total = 0;
+  for (const [price, size] of levels) {
+    const quantity = Math.min(size, notional / price);
+    total += quantity;
+    notional -= quantity * price;
+    if (notional < 1e-8) return total;
+  }
+  return null;
+}
+
 export class Portfolio {
   constructor(p, id, saved) {
     this.p = p;
@@ -79,8 +90,14 @@ export class Portfolio {
     const feeRate = this.p.feeBps / 10_000;
     const slip = this.p.slipBps / 10_000;
     const budget = Math.min(this.p.stake, this.cash);
-    // Round down to satoshis and travel through the visible opposing depth.
-    const qty = buy ? Math.floor(budget / (1 + feeRate) / (1 + slip) / bestAsk * 1e8) / 1e8 : this.position.qty;
+    const buyNotional = budget / (1 + feeRate) / (1 + slip);
+    let qty = this.position?.qty;
+    if (buy) {
+      const available = this.p.depthSizing ? quantityForBudget(book.asks,buyNotional) : buyNotional / bestAsk;
+      if (available === null) return reject('Profondeur insuffisante');
+      // Round down to satoshis before consuming the visible liquidity.
+      qty = Math.floor(available * 1e8) / 1e8;
+    }
     if (qty <= 0) return reject('Capital insuffisant');
     const vwap = walk(buy ? book.asks : book.bids, qty);
     if (vwap === null) return reject('Profondeur insuffisante');

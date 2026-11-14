@@ -5,6 +5,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {createServer} from 'node:http';
 import {parseArgs} from 'node:util';
 import {Engine, bps, decode, policy} from './engine.mjs';
+import {FastPaper} from './fast-paper.mjs';
 import {connect, history, synthetic} from './market.mjs';
 
 const {values:args} = parseArgs({options:{
@@ -67,13 +68,14 @@ const engine = new Engine({config, saved:prior?.engine, log:(kind, row) => {
   activity.push([kind,JSON.stringify(row)]);
   dirty ||= kind !== 'signal';
 }});
+const fast = new FastPaper(config, prior?.fast, (kind, row) => engine.log(kind,row));
 function flush() {
   if (!capture.length && !activity.length && !dirty) return;
   db.exec('BEGIN IMMEDIATE');
   try {
     for (const [recv, json] of capture) putMarket.run(session,recv,json);
     for (const [kind, json] of activity) putAudit.run(session,kind,json);
-    if (dirty && mode === 'live') putState.run(JSON.stringify({config:configText, engine:engine.checkpoint()}));
+    if (dirty && mode === 'live') putState.run(JSON.stringify({config:configText, engine:engine.checkpoint(), fast:fast.checkpoint()}));
     db.exec('COMMIT');
     capture = [];
     activity = [];
@@ -88,14 +90,26 @@ function ingest(json, recv, record) {
   marketTime = Math.max(marketTime, recv);
   if (record) capture.push([recv,json]);
   const event = decode(message);
+  const lastBook = engine.book;
+  const gaps = engine.count.gaps;
   engine.handle(event, marketTime);
+  if (event?.kind === 'book' && engine.book !== lastBook) {
+    if (engine.fresh(marketTime)) fast.tick(engine.book,marketTime,engine.paused);
+    else fast.suspend(marketTime,'Flux insuffisant',true);
+  } else if (engine.count.gaps > gaps || (event?.kind === 'candle' && event.closed && !engine.fresh(marketTime))) {
+    fast.suspend(marketTime,'Flux insuffisant',true);
+  }
   if (event?.kind === 'candle' && event.closed) dirty = true;
   if (capture.length >= 10_000) flush();
 }
 function status(next, description) {
   connection = next;
   detail = description;
-  if (next === 'offline') engine.connectionLost(Date.now());
+  if (next === 'offline') {
+    const now = Date.now();
+    engine.connectionLost(now);
+    fast.suspend(now,'Flux interrompu',true);
+  }
   engine.log('connection', {time:Date.now(), status:next, reason:description});
 }
 let stop = () => {}, playback, refresh;
@@ -113,7 +127,7 @@ function state({compact = false} = {}) {
     counts:engine.count, chart:compact ? engine.candles.slice(-160) : engine.candles, current:engine.current,
     ...(compact ? {historyVersion:minuteHistory.at(-1)?.t ?? null} : {minuteHistory}),
     tape:engine.tape.slice(0,18), book:book && {bids:book.bids.slice(0,7), asks:book.asks.slice(0,7)},
-    wallet, equity:compact ? engine.equity.slice(-300) : engine.equity,
+    wallet, fast:fast.summary(book,now), equity:compact ? engine.equity.slice(-300) : engine.equity,
     fills:compact ? engine.fills.slice(0,30) : engine.fills, strategy:engine.strategy,
     context:engine.context, nomination:engine.nomination, waiting:engine.waiting, paused:engine.paused,
     window:engine.window, covered:engine.covered, review:compact ? engine.audit.slice(0,8).map(({results,...report}) => report) : engine.audit,
@@ -130,7 +144,13 @@ const api = createServer((req,res) => {
     if (req.url === '/api/state') { json(state()); return; }
     if (req.url === '/api/client') { json(state({compact:true})); return; }
     if (req.url === '/api/time') { json(minuteHistory); return; }
-    if (req.url === '/health') { json({mode,session,status:state().status,marketReady:!!engine.fresh(mode === 'live' ? Date.now() : marketTime), counts:engine.count}); return; }
+    if (req.url === '/health') {
+      const now = mode === 'live' ? Date.now() : marketTime;
+      const marketReady = !!engine.fresh(now);
+      const status = connection === 'waiting' && marketReady ? 'live' : connection;
+      json({mode,session,status,marketReady, counts:engine.count});
+      return;
+    }
     if (req.url === '/api/audit') {
       flush();
       // A bounded copy keeps the write connection free during downloads.
@@ -145,7 +165,9 @@ const api = createServer((req,res) => {
       res.writeHead(403).end();
       return;
     }
-    engine.pause(req.url === '/api/pause', mode === 'live' ? Date.now() : marketTime);
+    const time = mode === 'live' ? Date.now() : marketTime;
+    engine.pause(req.url === '/api/pause',time);
+    if (engine.paused) fast.suspend(time,'Entrées suspendues');
     flush();
     json({paused:engine.paused});
     return;
@@ -183,8 +205,8 @@ if (args.batch) {
     if (activity.length >= 10_000) flush();
   }
   finishFeed();
-  const {wallet,candidates,counts,review,strategy} = state();
-  console.log(JSON.stringify({mode, elapsedMs:performance.now()-start, counts, strategy, wallet, candidates,
+  const {wallet,candidates,counts,review,strategy,fast:rapid} = state();
+  console.log(JSON.stringify({mode, elapsedMs:performance.now()-start, counts, strategy, wallet, candidates, fast:{...rapid, recent:undefined},
     reviews:review.length, promotions:review.filter(r => r.promoted).length},null,2));
   replayDb?.close();
   db.close();

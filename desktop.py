@@ -179,6 +179,9 @@ class Desktop:
                                   ('Cycles', 70), ('Drawdown', 105)])
         self.table('Statistiques', [('Indicateur', 235), ('Valeur', 270)])
         self.table('Décisions', [('Heure', 95), ('Couverture', 100), ('Motif', 465)])
+        self.table('Cadence', [('Indicateur', 235), ('Valeur', 265)])
+        self.table('Fills rapides', [('Heure', 85), ('Côté', 60), ('Prix USDT', 105), ('BTC', 95),
+                                    ('Frais', 75), ('Latence', 77), ('Net cycle', 82), ('Motif', 170)])
         self.tabs.bind('<<NotebookTabChanged>>', self.tab_changed)
         bottom = ttk.Frame(frame)
         bottom.grid(row=4, column=0, sticky='ew', pady=(6, 0))
@@ -309,7 +312,7 @@ class Desktop:
             except (OSError, ValueError):
                 self.connected = False
                 self.label.configure(text='●  RUNTIME INDISPONIBLE', foreground=DOWN)
-                self.runtime.configure(text='Reconnexion au moteur local…')
+                self.runtime.configure(text='Reconnexion au moteur local…', foreground=MUTED)
                 self.draw_depth(force=True)
                 self.pause.state(['disabled'])
             finally:
@@ -350,6 +353,10 @@ class Desktop:
             if key == 'net' and value:
                 color = UP if value > 0 else DOWN
             label.configure(text=prefix + money(value), foreground=color)
+        fast = s.get('fast')
+        if fast:
+            reach = fast['cycles60'] >= fast['target']
+            self.runtime.configure(foreground=UP if reach else MUTED)
         review = s['review'][0]['reason'] if s['review'] else 'Validation en attente'
         self.book_note.configure(text=f"Spread  {money(s['spread'], 3)} pb")
         self.strategy.configure(text=s['strategy'] or 'Cash')
@@ -357,9 +364,13 @@ class Desktop:
         self.decision.configure(text=f"Candidat {candidate} · {review}" if candidate else review)
         c = s['counts']
         lag = s['recent']['lagMs']
-        self.runtime.configure(text=f"{s['mode'].upper()}  #{s['session']}     "
-                               f"{s['strategy'] or 'Cash'}     {c['gaps']} manquantes     "
-                               f"Retard {lag if lag is not None else '—'} ms")
+        if fast:
+            self.runtime.configure(text=f"Rapide  {fast['cycles60']}/{fast['target']} cycles / 60 s   "
+                                   f"·   Net {money(fast['wallet']['net'])} USDT")
+        else:
+            self.runtime.configure(text=f"{s['mode'].upper()}  #{s['session']}     "
+                                   f"{s['strategy'] or 'Cash'}     {c['gaps']} manquantes     "
+                                   f"Retard {lag if lag is not None else '—'} ms")
         self.draw_depth()
         self.pause.configure(text='Reprendre entrées' if s['paused'] else 'Pause entrées')
         self.pause.state(['!disabled'] if self.action is None else ['disabled'])
@@ -374,9 +385,10 @@ class Desktop:
         if name == 'Transactions':
             rows = [('down' if t['sell'] else 'up', clock(t['t']), 'Vente' if t['sell'] else 'Achat',
                      money(t['price']), money(t['size'], 6)) for t in s['tape']]
-        elif name == 'Exécutions':
+        elif name in ('Exécutions', 'Fills rapides'):
+            fills = s['fills'] if name == 'Exécutions' else s.get('fast', {}).get('recent', [])
             rows = [('up' if f['side'] == 'BUY' else 'down', clock(f['time']), f['side'], money(f['price']),
-                     money(f['qty'], 8), money(f['fee'], 4), str(f['latencyMs']) + ' ms', money(f['net'], 4), f['reason']) for f in s['fills']]
+                     money(f['qty'], 8), money(f['fee'], 4), str(f['latencyMs']) + ' ms', money(f['net'], 4), f['reason']) for f in fills]
         elif name == 'Optimiseur':
             rows = [('', c['id'], money(c['score']), money(c['net']), c['trades'], money(c['drawdown']))
                     for c in sorted(s['candidates'], key=lambda c: c['score'] if c['score'] is not None else -1000000,
@@ -393,6 +405,23 @@ class Desktop:
                 ('Fenêtre couverte', f"{s['covered']} / {s['config']['windowMs'] // 1000} s"),
                 ('Frais / slippage par côté', f"{s['config']['feeBps']} / {s['config']['slipBps']} pb"),
             ]]
+        elif name == 'Cadence':
+            fast = s.get('fast')
+            rows = []
+            if fast:
+                wallet = fast['wallet']
+                rows = [('', label, value) for label, value in [
+                    ('Cycles terminés / 60 s', f"{fast['cycles60']} / {fast['target']} visés"),
+                    ('Exécutions / 60 s', fast['fills60']),
+                    ('Minutes à la cible', f"{fast['qualifiedMinutes']} / {fast['fullMinutes']}"),
+                    ('Cycles terminés cumulés', wallet['trades']),
+                    ('P&L net réalisé · USDT', money(wallet['net'], 4)),
+                    ('Frais cumulés · USDT', money(wallet['fees'], 4)),
+                    ('Net moyen / cycle · USDT', money(wallet['averageNet'], 4)),
+                    ('Capital liquidable · USDT', money(wallet['equity'], 4)),
+                    ('Refus et annulations', fast['rejections']),
+                    ('Cycles bénéficiaires', wallet['wins']),
+                ]]
         else:
             rows = [('', clock(r['time']), money(100 * r['coverage']) + ' %' if 'coverage' in r else '—',
                      r['reason']) for r in s['review']]
@@ -400,6 +429,8 @@ class Desktop:
         if key == self.table_key:
             return
         self.table_key = key
+        if not rows:
+            rows = [('', '—', 'Aucune donnée')]
         table = self.tables[name]
         children = table.get_children()
         for i, (tag, *values) in enumerate(rows):

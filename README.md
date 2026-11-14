@@ -36,6 +36,16 @@ node app.mjs --mode live --port 8790 --db data/scenario.sqlite --fee-bps 10 --sl
 
 `--fee-bps`, `--slip-bps` et `--latency-ms` règlent les hypothèses d’exécution. Un point de base (pb) vaut 0,01 %. Le modèle applique **10 pb de frais taker par côté**, **1 pb de slippage défavorable par côté**, le prix du carnet et **250 ms** de latence minimale par défaut. Consulter le [barème Binance](https://www.binance.com/en/fee/trading) pour les taux par compte et par paire. Une modification de configuration live nécessite un fichier de données distinct.
 
+## Poche de cadence et test du levier
+
+**Cadence** et **Fills rapides** suivent un portefeuille de simulation distinct. Il tente un achat long spot par créneau de 5 s, engage jusqu’à 250 USDT, et cherche à sortir au-dessus des coûts après 1 s ou sur échéance après 2,6 s. L’objectif est de 10 allers-retours sur 60 s. Le carnet, le spread, la latence, les coupures et les refus peuvent réduire le débit. La pause couvre les deux portefeuilles. Le journal identifie les événements de la poche par `wallet: "Rapide"`.
+
+```powershell
+node leverage-study.mjs --session 3 --end-seq 335859 --interest-bps-hour 1
+```
+
+Le scénario hors ligne rejoue le carnet spot aux tailles 250, 500, 750, 1 250 et 2 500 USDT. Il calcule aussi le rendement moyen par cycle si l’exposition restait à 250 USDT et que seule la marge initiale baissait. Les hypothèses sont 10 pb taker et 1 pb de slippage par côté, avec un taux d’intérêt d’emprunt proratisé hypothétique. Le replay utilise le carnet spot et ne simule pas les règles de liquidation, appels de marge, ou contrats perpétuels. Voir [résultats et périmètre](docs/LEVERAGE.md).
+
 ## Exploitation
 
 - `GET /health` donne l’état du flux et les compteurs. `marketReady=true` exige un carnet et des clôtures frais.
