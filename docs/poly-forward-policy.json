@@ -1,0 +1,11 @@
+{
+  "version": "clob-forward-v1",
+  "startUtc": "2026-11-14T19:50:00Z",
+  "shares": 10,
+  "edgePerShare": 0.04,
+  "latenciesMs": [250, 500, 1000],
+  "minMarkets": 300,
+  "minFills": 30,
+  "minUtcDays": 5,
+  "minExecutionCoverage": 0.95
+}
