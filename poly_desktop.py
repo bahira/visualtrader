@@ -46,6 +46,8 @@ class Dashboard:
         self.flow_modified = None
         self.pressure_report = {}
         self.pressure_modified = None
+        self.audit_report = {}
+        self.audit_modified = None
         self.markout_report = {}
         self.markout_modified = None
         self.reference = REFERENCE
@@ -132,6 +134,8 @@ class Dashboard:
                                 (162,66,70,86,76,80,108),4)
         self.capacity = self.table('Taille',('Signal · entrée · sortie','Parts','Cotées / fills','Motif principal','Net stressé'),
                                    (245,62,104,140,108),4)
+        self.robustness = self.table('Robustesse',('Signal','Marchés','Net USDC','Sans meilleur fill','Δ Brier / IC par jour'),
+                                     (200,76,89,116,176),4)
         self.journal.bind('<Double-1>',self.review_selected)
         self.live = ttk.Button(header,text='Revenir au direct',command=self.return_live)
         self.tabs.bind('<<NotebookTabChanged>>',lambda _: self.render_tables())
@@ -254,6 +258,14 @@ class Dashboard:
             if stamp != self.pressure_modified:
                 self.pressure_report = json.loads(source.read_text(encoding='utf8'))
                 self.pressure_modified = stamp
+        except (OSError, ValueError):
+            pass
+        source = self.path.with_name('pressure-audit.json')
+        try:
+            stamp = source.stat().st_mtime_ns
+            if stamp != self.audit_modified:
+                self.audit_report = json.loads(source.read_text(encoding='utf8'))
+                self.audit_modified = stamp
         except (OSError, ValueError):
             pass
         report = self.edge_report
@@ -559,6 +571,19 @@ class Dashboard:
                     flows.append(('',(pressure_names[key],item['n'],money(item['brier'],5),
                                       f"{item['fills']} / {attempts}",
                                       money(item['net'],2) if item['fills'] else '—')))
+        robustness = []
+        if self.audit_report.get('protocol')==self.pressure_report.get('protocol'):
+            for phase,label in [('forward','Prospectif'),('prior','Historique'),('retrospective','Rétrospectif')]:
+                for latency,models in self.audit_report.get('analysis',{}).get(phase,{}).items():
+                    robustness.append(('open',(f'{label} · {latency} ms','','','','')))
+                    for name,item in models.items():
+                        band = item['brierRangeByDay']
+                        brier = f"{item['pairedBrier']:+.4f} / {band[0]:+.4f} à {band[1]:+.4f}" if band else \
+                                f"{item['pairedBrier']:+.4f} / {item['days']}/{self.audit_report['minBlocks']} j"
+                        no_best = item['netWithoutBest']
+                        tag = 'open' if not band else ''
+                        robustness.append((tag,(pressure_names[name],item['markets'],money(item['net'],2),
+                                                 money(no_best,2),brier)))
         exits = []
         capacities = []
         reasons = {'entry-edge':'Marge insuffisante','entry-depth':'Achat trop mince',
@@ -588,7 +613,7 @@ class Dashboard:
                                 f"{point['stressedNet']:+.3f} USDC" if point['priced'] else '—')))
         for tree,rows in ((self.models,model_rows),(self.journal,trades),(self.decisions,decisions),
                           (self.lab,lab),(self.cohorts,cohorts),(self.flow,flows),(self.exits,exits),
-                          (self.capacity,capacities)):
+                          (self.capacity,capacities),(self.robustness,robustness)):
             ids = tree.get_children()
             for i,(tag,row) in enumerate(rows):
                 if i < len(ids):

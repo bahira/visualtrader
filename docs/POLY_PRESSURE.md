@@ -37,3 +37,11 @@ Six marchés historiques entièrement comparables sur 23 réglés. Au délai de 
 | Combinaison | 0,15400 | 1 | −3,04 USDC |
 
 L’impulsion améliore légèrement le score de prévision sur ce petit échantillon. À 250 ms, elle donne +4,50 USDC sur un fill. La combinaison donne +1,45 USDC sur deux fills au même délai, puis −3,04 USDC sur un fill à 500 ms et à 1 000 ms. La seule tentative de l’impulsion à 500 ms est rejetée par le carnet post-latence. L’évaluation prospective doit établir si ces écarts se reproduisent.
+
+## Robustesse du résultat
+
+`node poly_pressure_audit.mjs --watch` recalcule les écarts de Brier et de net par marché en reliant les preuves de pression aux derniers règlements du banc. Il vérifie les empreintes et l'heure du signal. Un règlement publié après le rapport de pression peut apparaître d'abord dans l'audit. L'audit conserve les inconnues, la ventilation Up/Down, le net après retrait du meilleur fill et un scénario qui impute une perte maximum à chaque tentative dont l'exécution est inconnue. Cette pénalité s'applique aux marchés comparables qui ont déclenché une tentative.
+
+Les intervalles percentiles descriptifs à 95 % rééchantillonnent des heures ou des journées UTC entières pour le Δ Brier, et des journées UTC pour le net pessimiste. La statistique est une moyenne par marché, avec 4 000 réplications déterministes et un minimum de 10 blocs observés. Les bornes ne corrigent pas les comparaisons multiples et supposent les blocs suffisamment indépendants. **Vue détaillée → Robustesse** affiche le net après retrait du meilleur fill et le nombre de jours disponibles pour l’intervalle.
+
+Sur les sept premiers marchés historiques appariés de l’audit, le net de la combinaison à 250 ms passe de **+1,45 USDC à −3,04 USDC** si on retire son meilleur fill. L’impulsion à 250 ms n’a qu’un fill. Les sept marchés couvrent deux heures UTC sur une journée et ne permettent pas d’afficher de fourchette par blocs.

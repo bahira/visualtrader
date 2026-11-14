@@ -39,18 +39,15 @@ BASE = backdrop()
 
 def render(t, series, metadata):
     scenes = (7,8,10,9)
-    if metadata.get('exit_marks'):
-        scenes += (8,)
-    if metadata.get('capacity'):
-        scenes += (8,)
-    if metadata.get('pressure'):
-        scenes += (8,)
+    optional = [name for name in ('exit_marks','capacity','pressure','robustness') if metadata.get(name)]
+    scenes += (8,)*len(optional)
     scenes += (7,)
     scene = 0
     while t>=scenes[scene] and scene<len(scenes)-1:
         t-=scenes[scene]
         scene+=1
     local = min(1,t/scenes[scene])
+    current = optional[scene-4] if 4<=scene<4+len(optional) else None
     ease = 1-(1-min(1,t/1.25))**3
     frame = BASE.copy()
     d = ImageDraw.Draw(frame)
@@ -114,7 +111,7 @@ def render(t, series, metadata):
             text(x+20,y+58,title,35,FG,True)
             text(x+20,y+125,a,22,MUTED)
             text(x+20,y+163,b,22,MUTED)
-    elif scene==4 and metadata.get('exit_marks'):
+    elif current=='exit_marks':
         text(64,title_y,'Et si on revend ?',55,FG,True)
         text(64,221,'Même fill Impulsion · entrée simulée à 250 ms',24,MUTED)
         for i,(label,value) in enumerate(metadata['exit_marks']):
@@ -125,7 +122,7 @@ def render(t, series, metadata):
                  MUTED if value is None else MINT if value>=0 else RED,True)
         text(64,529,'Revente de 10 parts au bid, frais d’aller-retour et stress inclus.',23,MUTED)
         text(64,577,'Une seule entrée observée. Les sorties sont des scénarios alternatifs.',23,GOLD)
-    elif scene==5 and metadata.get('capacity'):
+    elif current=='capacity':
         text(64,title_y,'Combien de parts ?',55,FG,True)
         text(64,221,'Impulsion · même carnet d’entrée, revente après 15 s',24,MUTED)
         for i,(size,value,status) in enumerate(metadata['capacity']):
@@ -136,7 +133,7 @@ def render(t, series, metadata):
                  GOLD if value is None else MINT if value>=0 else RED,True)
         text(64,526,'Chaque taille est rejouée indépendamment avec la marge initiale.',23,MUTED)
         text(64,572,'Un seul fill historique. La capacité varie avec le carnet.',23,GOLD)
-    elif scene==len(scenes)-2 and metadata.get('pressure'):
+    elif current=='pressure':
         text(64,title_y,'Le carnet ajoute-t-il un signal ?',48,FG,True)
         n, total, fills, rows = metadata['pressure']
         comparable = 'marché comparable' if n==1 else 'marchés comparables'
@@ -151,6 +148,15 @@ def render(t, series, metadata):
             text(979,y,f'{value:.5f}'.replace('.',','),23,color,True)
         fill_label = 'exécution simulée' if fills<=1 else 'exécutions simulées'
         text(64,601,f'{fills} {fill_label} sur les cinq variantes à 500 ms.',22,MUTED)
+    elif current=='robustness':
+        text(64,title_y,'Le poids du meilleur fill',51,FG,True)
+        markets,fills,net,trimmed,hours,days,minimum = metadata['robustness']
+        text(64,220,f'Pression + impulsion · entrée à 250 ms · {markets} marchés historiques',24,MUTED)
+        for x,label,value in ((64,'NET APRÈS FRAIS ET STRESS',net),(650,'SANS LE MEILLEUR FILL',trimmed)):
+            panel((x,320,x+565,475))
+            text(x+21,344,label,20,MUTED,True)
+            text(x+21,389,number(value*ease)+' USDC',39,MINT if value>=0 else RED,True)
+        text(64,530,f'{fills} fills · {hours} blocs horaires · {days}/{minimum} jours pour la fourchette',25,GOLD)
     else:
         text(64,title_y,'Le prochain verdict',55,FG,True)
         text(64,226,'Collecte prospective · protocole figé',25,MUTED)
@@ -168,6 +174,7 @@ def main():
     parser.add_argument('--preview',type=Path)
     parser.add_argument('--markout',type=Path)
     parser.add_argument('--pressure',type=Path)
+    parser.add_argument('--audit',type=Path)
     args = parser.parse_args()
     status = json.loads(Path('data/polymarket-v2/status.json').read_text(encoding='utf8'))
     result = json.loads(Path('data/polymarket-v2/spot-benchmark.json').read_text(encoding='utf-8-sig'))
@@ -199,7 +206,12 @@ def main():
             meta['pressure'] = (report['comparable']['prior'],report['eligible']['prior'],
                                 sum(m['fills'] for m in measured.values()),
                                 [(name,measured[key]['brier']) for key,name in labels.items()])
-    duration = 41+8*sum(bool(meta.get(key)) for key in ('exit_marks','capacity','pressure'))
+    if args.audit:
+        report = json.loads(args.audit.read_text(encoding='utf8'))
+        combined = report['analysis'].get('prior',{}).get('250',{}).get('combined')
+        if combined and combined['netWithoutBest'] is not None:
+            meta['robustness'] = tuple(combined[key] for key in ('markets','fills','net','netWithoutBest','hours','days'))+(report['minBlocks'],)
+    duration = 41+8*sum(bool(meta.get(key)) for key in ('exit_marks','capacity','pressure','robustness'))
     if args.preview:
         render(2,series,meta).save(args.preview)
     command = ['ffmpeg','-hide_banner','-loglevel','error','-y','-f','rawvideo','-pixel_format','rgb24',
