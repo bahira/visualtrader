@@ -40,6 +40,8 @@ python -B poly_spot_join.py --watch data/polymarket-v2/spot-benchmark.json
 
 La vue simplifiée convertit le P&L en euros au taux indicatif USD/EUR de la BCE (approximation 1 USDC ≈ 1 USD). Le taux est rafraîchi en arrière-plan et la conversion est masquée au-delà de sept jours. Une estimation admissible est affichée par heure, jour et 30 jours par extrapolation linéaire du P&L quotidien stressé. Le rapport vidéo versionné est généré avec Python, Pillow et FFmpeg. [Change de référence BCE](https://www.ecb.europa.eu/stats/policy_and_exchange_rates/euro_reference_exchange_rates/html/index.en.html)
 
+L’aperçu affiche le **résultat observé Quant Skew** sur trois périodes glissantes (1 h, 24 h et 30 jours). Le calcul lit le journal entier sur ces bornes toutes les 15 secondes. Chaque fenêtre est attribuée à son heure de clôture prévue. Seules les positions simulées officiellement réglées entrent dans le P&L après frais. La couverture affiche le nombre de marchés réglés par rapport au calendrier des échéances, y compris pour une fenêtre plus longue que l’historique disponible. Une fenêtre sans marché réglé affiche un tiret. Les positions en attente restent dénombrées dans le rapport exportable avec `python -B poly_periods.py`.
+
 ```powershell
 python -B docs/render_edge_report.py outputs/VisualTrader-Rapport.mp4 --preview outputs/VisualTrader-Apercu.png
 ```

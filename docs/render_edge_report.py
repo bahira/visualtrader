@@ -2,12 +2,18 @@
 
 import argparse
 from collections import OrderedDict
+from datetime import datetime
 from functools import lru_cache
 import json
 from pathlib import Path
+import sys
 import subprocess
 
 from PIL import Image, ImageDraw, ImageFont
+
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+from euro_reference import REFERENCE
+from poly_periods import read_periods
 
 W, H, FPS = 1280, 720, 24
 BG, FG = '#101721', '#edf6fa'
@@ -69,12 +75,17 @@ def render(t, series, metadata):
 
     if scene==0:
         text(64,title_y,'Combien ça rapporte ?',57,FG,True)
-        text(64,225,'BTC Up / Down · Polymarket · Simulation',25,MUTED)
+        text(64,225,'Quant Skew · résultat observé · frais inclus',25,MUTED)
         panel((64,315,1216,575))
-        text(93,348,'ESTIMATION EN EUROS',21,GOLD,True)
-        text(93,393,'Échantillon insuffisant',46,FG,True)
-        for i,label in enumerate(('PAR HEURE','PAR JOUR','SUR 30 JOURS')):
-            text(93+364*i,488,'—   '+label,24,MUTED,True)
+        for i,(label,row) in enumerate(zip(('DERNIÈRE HEURE','DERNIÈRES 24 H','DERNIERS 30 JOURS'),metadata['periods'].values())):
+            x = 93+364*i
+            text(x,343,label,21,MUTED,True)
+            net = row['net']
+            value = '—' if net is None else number(net*ease/REFERENCE[1])+' €'
+            text(x,390,value,42,RED if net is not None and net<0 else MINT if net else FG,True)
+            text(x,459,f"{row['resolved']}/{row['expected']} marchés réglés",21,MUTED)
+        text(93,524,'Estimation à venir · échantillon prospectif insuffisant',22,GOLD,True)
+        text(64,610,f'Taux BCE du {REFERENCE[0]:%d/%m/%Y} · 1 USDC ≈ 1 USD',18,MUTED)
     elif scene==1:
         text(64,title_y,'Le résultat observé',55,FG,True)
         text(64,221,'Quant Skew · positions simulées réglées · frais inclus',25,MUTED)
@@ -86,7 +97,7 @@ def render(t, series, metadata):
             panel((x,478,x+363,590))
             text(x+20,495,label,17,MUTED,True)
             text(x+20,525,value,33,FG,True)
-        text(65,616,'Conversion indicative BCE du 13/11/2026 · 1 USDC ≈ 1 USD',18,MUTED)
+        text(65,616,f'Conversion indicative BCE du {REFERENCE[0]:%d/%m/%Y} · 1 USDC ≈ 1 USD',18,MUTED)
     elif scene==2:
         text(64,title_y,'Ce que 250 ms changent',51,FG,True)
         text(64,215,f"Impulsion Binance · {metadata['sample']} marchés historiques comparables",25,MUTED)
@@ -196,10 +207,12 @@ def main():
     old = result['benchmark']['prior']
     series = OrderedDict((delay,(old[str(delay)]['impulse']['fills'],old[str(delay)]['impulse']['stressNet']))
                          for delay in (250,500,1000))
+    checked = int(datetime.fromisoformat(status['checked'].replace('Z','+00:00')).timestamp()*1000)
     meta = {'stamp':'Mesures du '+status['checked'][:10]+' · Polymarket BTC 5 min',
-            'net':status['summary']['skew']['net']/1.1052, 'fills':status['summary']['skew']['settled'],
+            'net':status['summary']['skew']['net']/REFERENCE[1], 'fills':status['summary']['skew']['settled'],
             'markets':status['resolved'],'book':status['summary']['market']['brier'],
-            'sample':old['500']['impulse']['markets']}
+            'sample':old['500']['impulse']['markets'],
+            'periods':read_periods(Path('data/polymarket-v2/paper.sqlite'),checked)}
     if args.markout:
         markout = json.loads(args.markout.read_text(encoding='utf8'))
         marks = markout['table']['prior']['250']['impulse']

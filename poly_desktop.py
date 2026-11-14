@@ -4,12 +4,14 @@ from datetime import date, datetime
 import json
 from pathlib import Path
 import time
+import sqlite3
 from threading import Thread
 import tkinter as tk
 from tkinter import ttk
 
 from desktop import configure_dpi, money
 from euro_reference import REFERENCE, euro_values, format_euro, read_reference
+from poly_periods import read_periods
 
 BG, PANEL, BORDER = '#101721', '#172332', '#2b3c50'
 FG, MUTED, GREEN, RED, AMBER = '#f1f5fa', '#b1bfd1', '#76e5bf', '#ff9e9f', '#f5c975'
@@ -52,6 +54,8 @@ class Dashboard:
         self.markout_modified = None
         self.reference = REFERENCE
         self.fx_attempt = None
+        self.periods = {}
+        self.last_period_read = None
         self.simple = True
         self.history = []
         self.market = None
@@ -141,29 +145,46 @@ class Dashboard:
         self.journal.bind('<Double-1>',self.review_selected)
         self.live = ttk.Button(header,text='Revenir au direct',command=self.return_live)
         self.tabs.bind('<<NotebookTabChanged>>',lambda _: self.render_tables())
-        self.details = (chart_panel,self.signal,self.positions,self.tabs)
+        self.details = (cards,chart_panel,self.signal,self.positions,self.tabs)
         self.overview = tk.Frame(outer,bg=BG)
         self.overview.grid(row=3,column=0,rowspan=4,sticky='nsew')
-        hero = tk.Frame(self.overview,bg=PANEL,padx=18,pady=14,
+        observed = tk.Frame(self.overview,bg=PANEL,padx=18,pady=10,
+                            highlightthickness=1,highlightbackground=BORDER)
+        observed.pack(fill='x',pady=(0,7))
+        self.label(observed,'RÉSULTAT OBSERVÉ · QUANT SKEW',MUTED,10,True,bg=PANEL).pack(anchor='w')
+        periods = tk.Frame(observed,bg=PANEL)
+        periods.pack(fill='x',pady=(5,0))
+        self.period_widgets = {}
+        for i,(key,title) in enumerate((('hour','Dernière heure'),('day','Dernières 24 h'),('month','Derniers 30 jours'))):
+            periods.columnconfigure(i,weight=1,uniform='period')
+            column = tk.Frame(periods,bg=PANEL)
+            column.grid(row=0,column=i,sticky='ew')
+            self.label(column,title,MUTED,10,bg=PANEL).pack(anchor='w')
+            value = self.label(column,'—',FG,20,True,bg=PANEL)
+            value.pack(anchor='w')
+            note = self.label(column,'Lecture du journal…',MUTED,9,bg=PANEL)
+            note.pack(anchor='w')
+            self.period_widgets[key] = (value,note)
+        hero = tk.Frame(self.overview,bg=PANEL,padx=18,pady=8,
                         highlightthickness=1,highlightbackground=BORDER)
         hero.pack(fill='x')
-        self.label(hero,'COMBIEN PAR JOUR ?',MUTED,10,True,bg=PANEL).pack(anchor='w')
-        self.projection = self.label(hero,'Données insuffisantes',FG,25,True,bg=PANEL)
-        self.projection.pack(anchor='w',pady=(4,3))
+        self.label(hero,'ESTIMATION · COMBIEN PAR JOUR ?',MUTED,10,True,bg=PANEL).pack(anchor='w')
+        self.projection = self.label(hero,'Données insuffisantes',FG,19,True,bg=PANEL)
+        self.projection.pack(anchor='w',pady=(2,2))
         self.projection_detail = self.label(hero,'Attente du rapport de recherche',MUTED,10,bg=PANEL)
         self.projection_detail.pack(anchor='w')
         horizons = tk.Frame(hero,bg=PANEL)
-        horizons.pack(fill='x',pady=(8,0))
+        horizons.pack(fill='x',pady=(3,0))
         self.hour = self.label(horizons,'— / heure',FG,13,True,bg=PANEL)
         self.hour.pack(side='left')
         self.month = self.label(horizons,'— / 30 jours',FG,13,True,bg=PANEL)
         self.month.pack(side='left',padx=24)
         tiles = tk.Frame(self.overview,bg=BG)
-        tiles.pack(fill='x',pady=10)
+        tiles.pack(fill='x',pady=7)
         self.overview_values = {}
         for i,(key,label) in enumerate((('net','NET QUANT SKEW'),('fills','FILLS RÉGLÉS'),('coverage','MARCHÉS PROSPECTIFS'))):
             tiles.columnconfigure(i,weight=1,uniform='overview')
-            box = tk.Frame(tiles,bg=PANEL,padx=12,pady=9,highlightthickness=1,highlightbackground=BORDER)
+            box = tk.Frame(tiles,bg=PANEL,padx=12,pady=5,highlightthickness=1,highlightbackground=BORDER)
             box.grid(row=0,column=i,sticky='ew',padx=(0,6 if i<2 else 0))
             self.label(box,label,MUTED,9,True,bg=PANEL).pack(anchor='w')
             self.overview_values[key] = self.label(box,'—',FG,17,True,bg=PANEL)
@@ -230,6 +251,19 @@ class Dashboard:
             Thread(target=self.update_reference,daemon=True).start()
         fx_date,fx_rate = self.reference
         fx = fx_rate if 0 <= (date.today()-fx_date).days <= 7 else None
+        if self.last_period_read is None or now-self.last_period_read>=15_000:
+            self.last_period_read = now
+            try:
+                self.periods = read_periods(self.path.with_name('paper.sqlite'),now)
+            except (sqlite3.Error,OSError,ValueError):
+                self.periods = {}
+        for key,(value,note) in self.period_widgets.items():
+            item = self.periods.get(key)
+            net = item['net'] if item else None
+            amount = '—' if net is None else format_euro(net/fx) if fx else f'{net:+.2f} USDC'
+            value.configure(text=amount,fg=GREEN if net is not None and net>0 else RED if net is not None and net<0 else FG)
+            note.configure(text=f"{item['resolved']}/{item['expected']} marchés réglés · {item['fills']} fills"
+                           if item else 'Journal indisponible')
         source = self.path.with_name('edge.json')
         try:
             stamp = source.stat().st_mtime_ns
@@ -315,7 +349,8 @@ class Dashboard:
         flow = grouped.get('prior',{}).get('250',{}).get('impulse',{})
         flow_line = (f"Flux Binance · {flow['fills']} fill(s) historique(s) à 250 ms sur {flow['markets']} marchés comparables."
                      if flow and self.flow_modified and now-self.flow_modified//1_000_000<600000 else '')
-        self.insights.configure(text='\n'.join(s for s in (status,forecast,quality,flow_line,conversion) if s))
+        messages = (status,quality,conversion) if self.root.winfo_height()<660 else (status,forecast,quality,flow_line,conversion)
+        self.insights.configure(text='\n'.join(s for s in messages if s))
 
     def refresh(self):
         changed = False
