@@ -36,4 +36,4 @@ Six marchés historiques entièrement comparables sur 23 réglés. Au délai de 
 | Impulsion | 0,13118 | 0 | 0 USDC |
 | Combinaison | 0,15400 | 1 | −3,04 USDC |
 
-L’impulsion améliore légèrement le score de prévision sur ce petit échantillon. Sa seule tentative à 500 ms est rejetée par le carnet post-latence. Les deux variantes de pression et leur combinaison déclenchent des achats simulés dont le résultat est négatif. L’évaluation prospective doit établir si ces écarts se reproduisent.
+L’impulsion améliore légèrement le score de prévision sur ce petit échantillon. À 250 ms, elle donne +4,50 USDC sur un fill. La combinaison donne +1,45 USDC sur deux fills au même délai, puis −3,04 USDC sur un fill à 500 ms et à 1 000 ms. La seule tentative de l’impulsion à 500 ms est rejetée par le carnet post-latence. L’évaluation prospective doit établir si ces écarts se reproduisent.
