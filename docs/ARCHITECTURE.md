@@ -15,7 +15,7 @@ flowchart LR
     R --> E
     E --> HTTP[API loopback]
     H[Historique Binance 1 min] --> HTTP
-    HTTP --> UI[Canvas et tableau de bord]
+    HTTP --> UI[Client desktop Python et Tk]
 ```
 
 ## Ingestion et horloges
@@ -48,6 +48,10 @@ Cette réflexion est algorithmique. Le moteur compare des variantes prédéfinie
 `app.mjs` tient une session de capture par démarrage. `market` contient chaque message brut et sa réception. `audit` contient les connexions, signaux, refus, exécutions, commandes et décisions. `state` stocke le portefeuille actif, la stratégie et l’état de pause. SQLite utilise WAL et transactions synchrones par lots autour de 250 ms. Un verrou SQLite par base exclut les seconds écrivains live. Le dernier lot non validé peut être perdu lors d’un arrêt forcé.
 
 Le replay lit une capture par numéro de session et remesure la stratégie depuis un portefeuille vierge avec la configuration fournie au lancement. Il reproduit l’ordre et les horaires des messages, y compris lors d’une lecture accélérée. Il n’applique pas les anciens états du portefeuille ni les commandes manuelles. Les périodes sans messages restent des lacunes. La démo utilise un marché synthétique déterministe pour vérifier les transitions. Les fills et gains synthétiques servent aux tests et ne constituent pas des résultats de marché.
+
+## Client de bureau
+
+`desktop.py` effectue les appels loopback dans un seul thread de travail. La boucle Tk récupère le résultat et ne modifie que l’onglet visible. Les séries courtes et décisions récentes transitent dans un JSON réduit. Le graphique Time récupère l’historique à la demande et réduit les barres de volume selon la largeur du Canvas. Le client fonctionne sans navigateur, sans WebView et sans paquet Python tiers. Le processus de marché reste indépendant du rendu.
 
 ## Périmètre et limites
 

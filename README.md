@@ -4,13 +4,17 @@ VisualTrader simule une stratégie BTC/USDT Spot autour du graphique Binance à 
 
 ## Démarrage
 
-Prérequis : Node.js 24.x, accès HTTPS et WSS publics à Binance. Aucun paquet à installer.
+Prérequis : Node.js 24.x pour le moteur, Python 3.10+ avec Tk pour le client, et accès HTTPS et WSS publics à Binance. Aucun paquet à installer.
+
+Dans un terminal :
 
 ```powershell
 npm.cmd start
 ```
 
-Ouvrir [127.0.0.1:8787](http://127.0.0.1:8787). Le bouton **Time** affiche environ 16 heures de clôtures à la minute, avec volumes et prolongation à partir des bougies live. **Bougies 1 s** affiche les OHLCV et les moyennes 7/25/99. **Capital** montre la valeur liquidable simulée en USDT.
+Puis lancer [VisualTrader.cmd](VisualTrader.cmd), ou exécuter `python desktop.py` dans un autre terminal. Le client utilise les contrôles natifs Tk et un tracé Canvas Tk. La connexion au moteur reste locale. À la fermeture du client, le moteur continue la capture et le paper trading.
+
+**Time** affiche jusqu’à environ 16 heures de clôtures à la minute, avec volumes et prolongation live. **1 s** affiche les bougies OHLCV. **Capital** montre le capital liquidable simulé en USDT. Les onglets donnent le carnet, les transactions, les exécutions, l’optimiseur, les statistiques et les décisions. Lancer `VisualTrader.cmd --port 8788` pour voir la démo de l’exemple ci-dessous.
 
 Le bouton **Pause entrées** suspend les nouveaux achats du portefeuille actif. Les sorties continuent. Sur un flux continu, il faut 99 bougies pour les indicateurs, puis deux fenêtres de 15 min pour la première activation possible. Le portefeuille reste en cash jusqu’à validation. Même avec un flux sain, le moteur peut rester en cash indéfiniment.
 
@@ -35,7 +39,7 @@ node app.mjs --mode live --port 8790 --db data/scenario.sqlite --fee-bps 10 --sl
 ## Exploitation
 
 - `GET /health` donne l’état du flux et les compteurs. `marketReady=true` exige un carnet et des clôtures frais.
-- `GET /api/state` fournit les données du tableau de bord. Les horodatages API sont en Unix millisecondes. Le navigateur affiche Europe/Paris.
+- `GET /api/state` fournit l’état complet. Le client charge `/api/client` environ une fois par seconde et `/api/time` uniquement lorsque le dernier timestamp de l’historique change. Les horodatages API sont en Unix millisecondes. Le client affiche l’heure locale Windows.
 - Le lien d’export télécharge les 10 000 derniers événements d’audit de la session courante en NDJSON. La base conserve les données brutes et l’audit complet.
 - En premier plan, arrêter avec Ctrl+C pour vider les tampons et fermer la base. Au redémarrage, le journal conserve le portefeuille actif et son historique récent. Les ordres virtuels en attente et les candidats repartent à zéro.
 - Superviser l’espace disque. La capture est intégrale pour les flux souscrits. La croissance varie avec le débit des transactions. La rotation est manuelle par changement de fichier `--db`. Pour sauvegarder un fichier actif, utiliser l’API de sauvegarde SQLite ou copier la base après arrêt propre.

@@ -1,4 +1,4 @@
-import {mkdirSync, readFileSync} from 'node:fs';
+import {mkdirSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {DatabaseSync} from 'node:sqlite';
@@ -99,7 +99,7 @@ function status(next, description) {
   engine.log('connection', {time:Date.now(), status:next, reason:description});
 }
 let stop = () => {}, playback, refresh;
-function state() {
+function state({compact = false} = {}) {
   const now = mode === 'live' ? Date.now() : marketTime;
   const book = engine.fresh(now) ? engine.book : null;
   const wallet = engine.active.summary(book);
@@ -110,16 +110,15 @@ function state() {
       ? null : Math.max(0,(engine.last.candleReceived ?? latest.exchange) - latest.exchange)},
     price:engine.tape[0]?.price ?? latest?.c ?? null,
     spread:book ? bps(book.asks[0][0],book.bids[0][0]) : null,
-    counts:engine.count, chart:engine.candles, current:engine.current, minuteHistory,
+    counts:engine.count, chart:compact ? engine.candles.slice(-160) : engine.candles, current:engine.current,
+    ...(compact ? {historyVersion:minuteHistory.at(-1)?.t ?? null} : {minuteHistory}),
     tape:engine.tape.slice(0,18), book:book && {bids:book.bids.slice(0,7), asks:book.asks.slice(0,7)},
-    wallet, equity:engine.equity, fills:engine.fills, strategy:engine.strategy,
+    wallet, equity:compact ? engine.equity.slice(-300) : engine.equity,
+    fills:compact ? engine.fills.slice(0,30) : engine.fills, strategy:engine.strategy,
     context:engine.context, nomination:engine.nomination, waiting:engine.waiting, paused:engine.paused,
-    window:engine.window, covered:engine.covered, review:engine.audit,
+    window:engine.window, covered:engine.covered, review:compact ? engine.audit.slice(0,8).map(({results,...report}) => report) : engine.audit,
     candidates:engine.shadows.map(s => s.summary(book))};
 }
-const files = Object.fromEntries([['/','index.html','text/html; charset=utf-8'],
-  ['/app.css','app.css','text/css'],['/ui.js','ui.js','text/javascript']].map(([url,file,type]) =>
-  [url,{body:readFileSync(resolve(root,'public',file)),type}]));
 const api = createServer((req,res) => {
   const authority = '127.0.0.1:' + port;
   res.setHeader('Cache-Control','no-store');
@@ -129,6 +128,8 @@ const api = createServer((req,res) => {
   const json = body => res.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify(body));
   if (req.method === 'GET') {
     if (req.url === '/api/state') { json(state()); return; }
+    if (req.url === '/api/client') { json(state({compact:true})); return; }
+    if (req.url === '/api/time') { json(minuteHistory); return; }
     if (req.url === '/health') { json({mode,session,status:state().status,marketReady:!!engine.fresh(mode === 'live' ? Date.now() : marketTime), counts:engine.count}); return; }
     if (req.url === '/api/audit') {
       flush();
@@ -138,8 +139,6 @@ const api = createServer((req,res) => {
       res.end(rows.map(({kind,json}) => JSON.stringify({kind,...JSON.parse(json)})).join('\n') + '\n');
       return;
     }
-    const file = Object.hasOwn(files, req.url) ? files[req.url] : null;
-    if (file) { res.writeHead(200,{'Content-Type':file.type}).end(file.body); return; }
   }
   if (req.method === 'POST' && (req.url === '/api/pause' || req.url === '/api/resume')) {
     if (req.headers.origin !== 'http://' + authority || req.headers['sec-fetch-site'] === 'cross-site') {
@@ -191,7 +190,7 @@ if (args.batch) {
   db.close();
 } else {
   api.listen(port,'127.0.0.1',() => {
-    console.log('VisualTrader ' + mode + ' · http://127.0.0.1:' + port + ' · session ' + session);
+    console.log('VisualTrader ' + mode + ' · port ' + port + ' · session ' + session);
     if (mode === 'live') {
       stop = connect((json,recv) => ingest(json,recv,true),status);
       const load = async () => {
