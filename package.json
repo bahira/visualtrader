@@ -1,0 +1,8 @@
+{
+  "name": "visualtrader",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=24"},
+  "scripts": {"start":"node app.mjs", "demo":"node app.mjs --mode demo --speed 12", "test":"node --test", "benchmark":"node app.mjs --mode demo --batch"}
+}
