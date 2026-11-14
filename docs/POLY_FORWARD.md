@@ -22,3 +22,5 @@ node --test test/poly_research.test.mjs
 ```
 
 Le mode watch actualise le rapport chaque minute. L'étude est indépendante de la boucle de décision du simulateur. Les entrées et sorties de production restent protégées par leurs propres verrous. Le résultat n'active aucune variante. Connecter le [TWAP exact](https://docs.polymarket.com/market-data/realtime-data#twap-prices) requiert un accès authentifié aux données. Le WebSocket public ne permet pas de prouver qu'aucune mise à jour n'a été perdue.
+
+Le [banc d’essai clonable](POLY_EDGE.md) ajoute un protocole séparé pour les variantes de consensus et de paire, ainsi qu’un aperçu natif.

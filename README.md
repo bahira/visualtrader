@@ -74,3 +74,4 @@ Le [carnet différentiel reconstruit](docs/DEPTH_REPLAY.md) permet de rejouer le
 La [campagne paper multi-journées](docs/PAPER_CAMPAIGN.md) fige les réglages et agrège les nouveaux blocs hors échantillon.
 
 Le [mode paper Polymarket BTC Up/Down](docs/POLYMARKET.md) teste le momentum et la semivariance dans un worker indépendant.
+Lancer [Polymarket.cmd](Polymarket.cmd) pour ouvrir l’aperçu natif. Le [banc d’essai clonable](docs/POLY_EDGE.md) documente les variantes, les replays et les résultats par cohorte.

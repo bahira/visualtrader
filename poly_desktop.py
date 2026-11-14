@@ -12,6 +12,8 @@ from desktop import configure_dpi, money
 BG, PANEL, BORDER = '#101721', '#172332', '#2b3c50'
 FG, MUTED, GREEN, RED, AMBER = '#f1f5fa', '#b1bfd1', '#76e5bf', '#ff9e9f', '#f5c975'
 NAMES = {'anchor':'Proxy BTC','momentum':'Momentum','skew':'Quant Skew'}
+EDGE_NAMES = {'pair':'Paire Up + Down','opening':'Écart au TWAP d’ouverture',
+              'consensus':'Consensus BTC + carnet','skew':'Quant Skew · référence'}
 DEFAULT_PATH = Path(__file__).resolve().parent / 'data/polymarket-v2/status.json'
 
 
@@ -36,6 +38,9 @@ class Dashboard:
         self.root, self.path = root, path
         self.state = {}
         self.modified = None
+        self.edge_report = {}
+        self.edge_modified = None
+        self.simple = True
         self.history = []
         self.market = None
         self.quote_time = None
@@ -64,6 +69,8 @@ class Dashboard:
         header.grid(row=0,column=0,sticky='ew')
         self.label(header,'VisualTrader  /  Polymarket',FG,16,True).pack(side='left')
         self.label(header,'PAPER TRADING',AMBER,10,True).pack(side='right')
+        self.view_button = ttk.Button(header,text='Vue détaillée',command=self.toggle_view)
+        self.view_button.pack(side='right',padx=12)
         market = tk.Frame(outer,bg=BG,pady=8)
         market.grid(row=1,column=0,sticky='ew')
         self.market_label = self.label(market,'BTC Up / Down  ·  5 min',FG,13,True)
@@ -105,9 +112,43 @@ class Dashboard:
                                   (75,130,65,85,90,150),4)
         self.decisions = self.table('Décision',('Modèle','Côté','Prob.','Coût / part','Edge','Motif'),
                                    (126,55,65,86,63,215),4)
+        self.lab = self.table('Banc d’essai',('Variante','Fills','Rejets','Inconnus','Frais','Net stressé'),
+                              (210,60,65,76,80,110),4)
+        self.cohorts = self.table('Cohortes',('Signal · côté · régime · spread','Fills / essais','Inconnus','Net stressé'),
+                                  (380,100,76,100),4)
         self.journal.bind('<Double-1>',self.review_selected)
         self.live = ttk.Button(header,text='Revenir au direct',command=self.return_live)
         self.tabs.bind('<<NotebookTabChanged>>',lambda _: self.render_tables())
+        self.details = (chart_panel,self.signal,self.positions,self.tabs)
+        self.overview = tk.Frame(outer,bg=BG)
+        self.overview.grid(row=3,column=0,rowspan=4,sticky='nsew')
+        hero = tk.Frame(self.overview,bg=PANEL,padx=18,pady=14,
+                        highlightthickness=1,highlightbackground=BORDER)
+        hero.pack(fill='x')
+        self.label(hero,'ESTIMATION PAPER · PAR JOUR',MUTED,10,True,bg=PANEL).pack(anchor='w')
+        self.projection = self.label(hero,'Données insuffisantes',FG,25,True,bg=PANEL)
+        self.projection.pack(anchor='w',pady=(4,3))
+        self.projection_detail = self.label(hero,'Attente du rapport de recherche',MUTED,10,bg=PANEL)
+        self.projection_detail.pack(anchor='w')
+        tiles = tk.Frame(self.overview,bg=BG)
+        tiles.pack(fill='x',pady=10)
+        self.overview_values = {}
+        for i,(key,label) in enumerate((('net','NET QUANT SKEW'),('fills','FILLS RÉGLÉS'),('coverage','MARCHÉS PROSPECTIFS'))):
+            tiles.columnconfigure(i,weight=1,uniform='overview')
+            box = tk.Frame(tiles,bg=PANEL,padx=12,pady=9,highlightthickness=1,highlightbackground=BORDER)
+            box.grid(row=0,column=i,sticky='ew',padx=(0,6 if i<2 else 0))
+            self.label(box,label,MUTED,9,True,bg=PANEL).pack(anchor='w')
+            self.overview_values[key] = self.label(box,'—',FG,17,True,bg=PANEL)
+            self.overview_values[key].pack(anchor='w',pady=(3,0))
+        insights = tk.Frame(self.overview,bg=PANEL,padx=18,pady=11,
+                            highlightthickness=1,highlightbackground=BORDER)
+        insights.pack(fill='both',expand=True)
+        self.label(insights,'Lecture automatique',FG,12,True,bg=PANEL).pack(anchor='w')
+        self.insights = tk.Label(insights,bg=PANEL,fg=MUTED,font=('Segoe UI',10),anchor='nw',justify='left')
+        self.insights.pack(fill='both',expand=True,pady=(6,0))
+        insights.bind('<Configure>',lambda event: self.insights.configure(wraplength=max(360,event.width-40)))
+        for widget in self.details:
+            widget.grid_remove()
         self.refresh()
 
     def label(self,parent,text,color,size,bold=False,bg=BG):
@@ -129,6 +170,69 @@ class Dashboard:
         tree.tag_configure('loss',foreground=RED)
         tree.tag_configure('open',foreground=AMBER)
         return tree
+
+    def toggle_view(self):
+        self.simple = not self.simple
+        if self.simple:
+            self.live.pack_forget()
+            for widget in self.details:
+                widget.grid_remove()
+            self.overview.grid()
+        else:
+            self.overview.grid_remove()
+            for widget in self.details:
+                widget.grid()
+            if self.review_trial:
+                self.live.pack(side='right',padx=10)
+            self.draw()
+            self.render_tables()
+        self.view_button.configure(text='Vue détaillée' if self.simple else 'Vue simplifiée')
+
+    def refresh_overview(self, now):
+        source = self.path.with_name('edge.json')
+        try:
+            stamp = source.stat().st_mtime_ns
+            if stamp != self.edge_modified:
+                self.edge_report = json.loads(source.read_text(encoding='utf8'))
+                self.edge_modified = stamp
+        except (OSError, ValueError):
+            pass
+        report = self.edge_report
+        fresh = self.edge_modified and now-self.edge_modified//1_000_000<180000
+        model = self.state.get('summary',{}).get('skew',{})
+        fills = model.get('settled',0)
+        net = model.get('net',0)
+        models = report.get('table',{}).get('500',{})
+        qualified = report.get('qualified',[]) if fresh else []
+        model_key = qualified[0] if qualified else 'consensus'
+        estimate = models.get(model_key,{}).get('daily') if fresh and report.get('prospective') else None
+        if estimate:
+            low,high = estimate['range']
+            self.projection.configure(text=f"{estimate['mean']:+.2f} USDC / jour",fg=FG)
+            self.projection_detail.configure(text=f"{EDGE_NAMES[model_key]} · intervalle empirique {low:+.2f} à {high:+.2f} · {estimate['days']} jours")
+        else:
+            policy = report.get('policy',{})
+            detail = ('Rapport de recherche indisponible' if not fresh else
+                      f"Consensus · {models.get('consensus',{}).get('tradingDays',0)}/{policy.get('minTradingDays',10)} jours avec fills · replay à 500 ms")
+            self.projection.configure(text='Estimation indisponible',fg=FG)
+            self.projection_detail.configure(text=detail)
+        self.overview_values['net'].configure(text=f'{net:+.2f} USDC' if fills else '—',
+                                             fg=GREEN if net>0 else RED if net<0 else FG)
+        self.overview_values['fills'].configure(text=f"{fills} / {model.get('trades',0)}")
+        expected = report.get('expected',0)
+        self.overview_values['coverage'].configure(text=f"{report.get('settled',0)} / {expected}" if fresh else '—')
+        status = ('Candidats paper qualifiés · '+', '.join(EDGE_NAMES[k] for k in qualified) if qualified else
+                  'Replay rétrospectif. Qualification désactivée.' if fresh and report.get('verdict')=='retrospective' else
+                  'Aucun candidat qualifié à la clôture du test.' if fresh and report.get('verdict')=='no-candidate' else
+                  'Validation prospective en cours.' if fresh else 'Attente du rapport de recherche.')
+        benchmark = self.state.get('summary',{}).get('market',{}).get('brier')
+        brier = model.get('brier')
+        forecast = (f"Brier Skew {brier:.3f} · carnet {benchmark:.3f} (plus bas = mieux)."
+                    if benchmark is not None and brier is not None else '')
+        gaps = report.get('diagnostics',{})
+        quality = (f"Couverture · {gaps.get('missingTrials',0)} signaux manquants · "
+                   f"{gaps.get('missingBooks',0)} carnets manquants · {gaps.get('waitingSettlement',0)} règlements en attente.") if fresh else ''
+        self.insights.configure(text='\n'.join(s for s in (status,forecast,quality) if s))
 
     def refresh(self):
         changed = False
@@ -197,10 +301,12 @@ class Dashboard:
             self.history.append((qt,prob['skew'],prob['market']))
             self.history = self.history[-80:]
             changed = True
-        if changed:
-            self.draw()
-        if changed or (now//1000)%5 == 0:
-            self.render_tables()
+        self.refresh_overview(now)
+        if not self.simple:
+            if changed:
+                self.draw()
+            if changed or (now//1000)%5 == 0:
+                self.render_tables()
         self.root.after(1000,self.refresh)
 
     def draw(self):
@@ -345,7 +451,20 @@ class Dashboard:
                      pct(result.get('prob')),pct(result.get('cost')),pct(result.get('signalEdge')),readable(result['reason']))))
         for gap in self.state.get('misses',[])[:4]:
             decisions.append(('open',(timestamp(gap['start']),'—','—','—','—',readable(gap['detail']))))
-        for tree,rows in ((self.models,model_rows),(self.journal,trades),(self.decisions,decisions)):
+        lab = []
+        for key,item in self.edge_report.get('table',{}).get('500',{}).items():
+            lab.append(('',(EDGE_NAMES.get(key,key),item['fills'],item['rejected'],item['unknown'],
+                            money(item['fees'],2),money(item['stress'],2) if item['fills'] else '—')))
+        regimes = {'up':'Up','down':'Down','pair':'Paire','high-vol':'vol. haute','low-vol':'vol. basse',
+                   'aligned':'aligné','divergent':'divergent','wide':'large','tight':'serré','missing-spread':'inconnu'}
+        cohorts = []
+        for key,item in sorted(self.edge_report.get('crosses',{}).items()):
+            variant,*factors = key.split('/')
+            label = ' · '.join([EDGE_NAMES.get(variant,variant),*(regimes.get(f,f) for f in factors)])
+            cohorts.append(('',(label,f"{item['fills']} / {item['attempts']}",item['unknown'],
+                                money(item['stress'],2) if item['fills'] else '—')))
+        for tree,rows in ((self.models,model_rows),(self.journal,trades),(self.decisions,decisions),
+                          (self.lab,lab),(self.cohorts,cohorts)):
             ids = tree.get_children()
             for i,(tag,row) in enumerate(rows):
                 if i < len(ids):

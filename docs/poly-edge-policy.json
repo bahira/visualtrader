@@ -1,0 +1,14 @@
+{
+  "version": "poly-edge-v1",
+  "startUtc": "2026-11-14T20:10:00Z",
+  "endUtc": "2026-11-28T20:10:00Z",
+  "latenciesMs": [250, 500, 1000],
+  "shares": 10,
+  "pairSkewMs": 100,
+  "directionalEdge": 0.04,
+  "pairMargin": 0.02,
+  "stressPerLeg": 0.005,
+  "minCoverage": 0.95,
+  "minFills": 30,
+  "minTradingDays": 10
+}

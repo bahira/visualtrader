@@ -1,0 +1,53 @@
+# Banc d’essai VisualTrader · Polymarket BTC Up/Down
+
+Dans `Polymarket.cmd`, l’aperçu affiche le P&L réglé de Quant Skew, les fills, la couverture du test et une estimation quotidienne quand l’échantillon le permet. **Vue détaillée** ouvre le graphique, le journal, les décisions, le banc et les cohortes. Le chiffre quotidien correspond à la moyenne du P&L stressé des journées UTC complètes, avec une fourchette empirique par blocs de deux jours. Avant qualification, l’estimation affichée concerne la variante Consensus, choisie à l’avance. Les quatre portefeuilles contrefactuels sont indépendants.
+
+## Hypothèses et preuves
+
+| Variante | Hypothèse |
+| --- | --- |
+| Quant Skew | Référence REST historique rejouée sur le même carnet et avec le même stress que les nouveaux signaux |
+| Écart au TWAP d’ouverture | Comparer les moyennes de 60 clôtures Binance 1 s précédant l’ouverture et précédant le signal, puis corriger le logit du carnet dans une plage bornée |
+| Consensus BTC + carnet | Entrer seulement du côté où se recoupent l’écart au TWAP d’ouverture, le momentum 30 s et le carnet |
+| Paire Up + Down | Observer si les deux jambes synchrones coûtent assez peu après frais. Le rapport donne aussi le stress d’une seule jambe remplie. Le potentiel de double exécution reste exploratoire |
+
+Le banc relie le journal REST, les chandelles Binance et le WebSocket CLOB par ouverture et identifiant de marché. Il lit une fois les trames du marché, traite le paquet WebSocket entier, exige un carnet pré-signal et rejette toute reprise après une coupure située entre décision et observation. Les observations sont sauvegardées avant règlement pour survivre à la rotation du carnet. Les jambes de la paire doivent être observées à moins de 100 ms l’une de l’autre, en horloge source et en réception locale. Pour chaque test, le premier prix admissible est comparé au seuil. Une profondeur insuffisante vaut rejet. Une absence de preuve d’exécution vaut inconnue. Les cohortes à 500 ms croisent côté, volatilité, accord momentum/skew et spread. Les prix de règlement proviennent du journal officiel, et la moyenne Binance reste un proxy. [Flux TWAP officiel](https://docs.polymarket.com/market-data/realtime-data#twap-prices) · [Frais](https://docs.polymarket.com/trading/fees)
+
+La fenêtre prospective v1 va du 14 novembre 2026 à 21 h 10 au 28 novembre 2026 à 21 h 10, heure de Paris. L’empreinte inclut le manifeste et le code d’évaluation, de capture et du journal source. Le premier enregistrement de cette empreinte doit précéder le début du bloc. Seuls les deux signaux directionnels nouveaux sont éligibles à la qualification. Elle demande, aux trois latences (250, 500, 1 000 ms), au moins 95 % de fenêtres couvertes et de tentatives observables, 30 fills et 10 jours avec fills. Le bas de la fourchette empirique du net stressé et le résultat avec pénalité maximale pour les fenêtres manquantes doivent être positifs à la clôture du bloc. La fourchette reste descriptive. Le benchmark donne aussi la différence nette avec Skew sur les observations comparables.
+
+## Cloner une expérience
+
+```powershell
+Copy-Item docs/poly-edge-policy.json data/poly-edge-experience.json
+# Choisir une nouvelle version et des bornes UTC alignées sur cinq minutes.
+node poly_edge.mjs --policy data/poly-edge-experience.json --output data/polymarket-v2/experience --watch
+node poly_edge.mjs --policy data/poly-edge-experience.json --output data/polymarket-v2/experience --export > data/polymarket-v2/experience.ndjson
+```
+
+Le manifeste permet de faire varier la taille, les marges, le stress et les seuils d’échantillonnage. Chaque sortie a son propre verrou SQLite. `--paper` et `--clob` permettent une répétition sur deux archives compatibles. `--export` produit une ligne JSON par fenêtre avec signaux, timestamps, observations, décision et coûts à chaque latence, phase du test et règlement. Pour porter le protocole sur un autre domaine, raccorder des tables de décisions, carnets et règlements qui respectent le contrat d’entrée. Le code actuel suppose deux issues exclusives, un paiement binaire et cinq minutes par fenêtre.
+
+## 10 indispensables
+
+1. **Frais et coût exécutable** ✓ Calcul par niveau et stress de 0,5 cent supplémentaire par part et par jambe.
+2. **Cadre prospectif gelé** ✓ Empreinte du code et de la politique, enregistrement avant ouverture, date de clôture.
+3. **Vérité terrain** ✓ Règlement officiel. Le TWAP Chainlink en cours de marché reste à raccorder.
+4. **Rejeu causal** ✓ Carnet pré-signal, latence, paquets atomiques et preuve conservée.
+5. **Couverture** ✓ Compter les marchés absents, carnets absents, règlements en attente et exécutions inconnues.
+6. **Benchmarks** ✓ Cash zéro, Skew à exécution comparable et trois latences. Comparaison Brier carnet/Skew dans l’aperçu.
+7. **Estimation robuste au manque de données** ✓ Fourchette empirique, pénalité de couverture et estimation masquée en échantillon court.
+8. **Contrôle de synchronisation** Partiel. Les deux timestamps sont conservés et bornés. La divergence horloge locale/source et la continuité hors reconnexion restent à mesurer indépendamment.
+9. **Exploitation légère** ✓ Worker indépendant, SQLite, cache d’observations, export granulaire et aperçu natif.
+10. **Preuve de rentabilité** En collecte. Le test peut conclure à l’absence de candidat.
+
+## 10 améliorations suivantes
+
+1. Collecter le TWAP authentifié et mesurer l’erreur du proxy au début et à la fin de chaque marché.
+2. Vérifier la continuité du carnet avec des snapshots REST indépendants et mesurer les dérives temporelles.
+3. Mesurer la vitesse, la RAM et l’espace disque sur des sessions complètes et aux heures d’activité élevée.
+4. Ajouter des archives brutes compressées, indexées et vérifiables pour les reprises de recherche au-delà de la rétention courante.
+5. Rejouer plusieurs tailles et les fills partiels. Mesurer séparément le coût d’une seconde jambe retardée.
+6. Suivre le markout et le coût de sortie à plusieurs délais.
+7. Vérifier les asymétries Up/Down et court/long avec des fenêtres de confirmation et des corrections de tests multiples.
+8. Implémenter un modèle maker avec scénarios de file, rejets et annulations puis le comparer au taker.
+9. Extraire un adaptateur générique pour d’autres contrats et pour les données Binance spot. Mesurer leur transférabilité sur des dates appariées.
+10. Ajouter filtre de cohorte, fenêtre de replay depuis le banc, courbe de P&L journalier et rapport de dérive de calibration.

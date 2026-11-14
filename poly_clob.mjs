@@ -93,6 +93,63 @@ export function replayClob(db, slug, time, side, latency, shares=10, deadline=In
   return null;
 }
 
+// This protocol reads the market once, evaluating complete WebSocket frames atomically.
+export function replayExecution(m, frames, time, latencies, shares, deadline, pairSkewMs) {
+  const books = new Books(m);
+  const samples = latencies.map(latency=>({barrier:time+latency,sides:[null,null],pair:null}));
+  const result = {initial:null,samples};
+  const seen = [0,0];
+  let last = 0;
+  const state = i=>books.raw(m.tokens[i]);
+  const observe = (raw, i, recv)=>({recv,source:raw.timestamp,bid:raw.bestBid,ask:raw.bestAsk,
+    quote:quote(raw,m.tokens[i],m.condition,shares,m.rate,recv)});
+  function snapshot() {
+    const current = [state(0),state(1)];
+    if (!current.every((raw,i)=>raw && time-seen[i]<=4000 && Math.abs(time-raw.timestamp)<=4000)) return;
+    result.initial = current.map((raw,i)=>({...observe(raw,i,seen[i]),
+      quote:quote(raw,m.tokens[i],m.condition,shares,m.rate,time)}));
+  }
+  for (const frame of frames) {
+    if (frame.recv<last) return {initial:null,samples:[]};
+    last = frame.recv;
+    if (frame.recv>=deadline) break;
+    if (!result.initial && frame.recv>=time) {
+      snapshot();
+      if (!result.initial) return result;
+    }
+    if (frame.type==='reset') {
+      if (frame.recv>=time) break;
+      books.reset();
+      seen.fill(0);
+      continue;
+    }
+    let updated = 0;
+    for (const event of JSON.parse(frame.data)) {
+      for (const id of books.apply(event)) updated |= id===m.tokens[0] ? 1 : 2;
+    }
+    if (!updated) continue;
+    for (let i=0;i<2;i++) if (updated & (1<<i)) seen[i]=frame.recv;
+    if (frame.recv<time) continue;
+    for (const sample of samples) {
+      if (frame.recv<sample.barrier || frame.recv>sample.barrier+4000) continue;
+      for (let i=0;i<2;i++) {
+        if (sample.sides[i] || !(updated & (1<<i))) continue;
+        const raw = state(i);
+        if (raw && raw.timestamp>=sample.barrier) sample.sides[i]=observe(raw,i,frame.recv);
+      }
+      if (sample.pair || seen.some(recv=>recv<sample.barrier) || Math.abs(seen[0]-seen[1])>pairSkewMs) continue;
+      const raw = [state(0),state(1)];
+      if (raw.every(book=>book && book.timestamp>=sample.barrier) &&
+          Math.abs(raw[0].timestamp-raw[1].timestamp)<=pairSkewMs) {
+        sample.pair=raw.map((book,i)=>observe(book,i,seen[i]));
+      }
+    }
+    if (samples.every(sample=>sample.pair && sample.sides.every(Boolean))) break;
+  }
+  if (!result.initial && last<time) snapshot();
+  return result;
+}
+
 async function main() {
   mkdirSync(DIR,{recursive:true});
   const lock = new DatabaseSync(resolve(DIR,'lock.sqlite'));
