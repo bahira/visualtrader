@@ -1,77 +1,77 @@
 # VisualTrader
 
-VisualTrader simule une stratégie BTC/USDT Spot autour du graphique Binance à **1 seconde**. Le runtime utilise des flux publics et un portefeuille virtuel en USDT. Il ne contient aucun client d’ordres ni configuration de clés d’échange.
+VisualTrader simulates a BTC/USDT spot strategy using Binance **1-second** chart data. The runtime uses public market feeds and a virtual USDT portfolio. It contains no order execution client or exchange API key configuration.
 
-## Démarrage
+## Getting started
 
-Prérequis : Node.js 24.x pour le moteur, Python 3.10+ avec Tk pour le client, et accès HTTPS et WSS publics à Binance. Aucun paquet à installer.
+Requirements: Node.js 24.x for the engine, Python 3.10+ with Tk for the client, and access to Binance public HTTPS and WSS endpoints. No additional packages to install.
 
-Dans un terminal :
+In a terminal:
 
 ```powershell
 npm.cmd start
 ```
 
-Puis lancer [VisualTrader.cmd](VisualTrader.cmd), ou exécuter `python desktop.py` dans un autre terminal. Le client utilise les contrôles natifs Tk et un tracé Canvas Tk. La connexion au moteur reste locale. À la fermeture du client, le moteur continue la capture et le paper trading.
+Then launch [VisualTrader.cmd](VisualTrader.cmd), or run `python desktop.py` in another terminal. The client uses native Tk controls and a Tk Canvas chart. The connection to the engine remains local. Closing the client does not stop the engine's data capture or paper trading.
 
-**Time** affiche jusqu’à environ 16 heures de clôtures à la minute, avec volumes et prolongation live. **1 s** affiche les bougies OHLCV. Survolez le tracé pour inspecter un point et utilisez la molette ou le menu de durée pour changer l’échelle. Les raccourcis Ctrl+1, Ctrl+2 et Ctrl+3 changent de vue. **Capital** montre le capital liquidable simulé en USDT. Les onglets donnent le carnet, les transactions, les exécutions, l’optimiseur, les statistiques et les décisions. Lancer `VisualTrader.cmd --port 8788` pour voir la démo de l’exemple ci-dessous.
+**Time** displays up to approximately 16 hours of one-minute closing prices, with volume and live updates. **1 s** displays OHLCV candles. Hover over the chart to inspect a point, and use the mouse wheel or duration menu to change the scale. Ctrl+1, Ctrl+2 and Ctrl+3 switch views. **Capital** shows simulated liquidatable equity in USDT. Tabs provide access to the order book, trades, executions, optimizer, statistics and decisions. Launch `VisualTrader.cmd --port 8788` to view the demo below.
 
-Le bouton **Pause entrées** suspend les nouveaux achats du portefeuille actif. Les sorties continuent. Sur un flux continu, il faut 99 bougies pour les indicateurs, puis deux fenêtres de 15 min pour la première activation possible. Le portefeuille reste en cash jusqu’à validation. Même avec un flux sain, le moteur peut rester en cash indéfiniment.
+The **Pause entrées** (Pause entries) button suspends new purchases in the active portfolio. Exits continue. With an uninterrupted feed, indicators require 99 candles, followed by two 15-minute windows before the first possible activation. The portfolio remains in cash until validation. Even with a healthy feed, the engine may remain in cash indefinitely.
 
 ```powershell
-# Démo synthétique accélérée et isolée du portefeuille live
+# Accelerated synthetic demo, isolated from the live portfolio
 npm.cmd run demo -- --port 8788
 
-# Replay accéléré des prix et du carnet d’une session capturée
+# Accelerated price and order-book replay of a captured session
 node app.mjs --mode replay --session 1 --speed 50 --port 8789
 
-# Replay non interactif et mesures de débit
+# Non-interactive replay and throughput measurements
 node app.mjs --mode replay --session 1 --batch
 npm.cmd run benchmark
 npm.cmd test
 
-# Isoler un autre scénario de coûts
+# Isolate an alternative execution-cost scenario
 node app.mjs --mode live --port 8790 --db data/scenario.sqlite --fee-bps 10 --slip-bps 2 --latency-ms 400
 ```
 
-`--fee-bps`, `--slip-bps` et `--latency-ms` règlent les hypothèses d’exécution. Un point de base (pb) vaut 0,01 %. Le modèle applique **10 pb de frais taker par côté**, **1 pb de slippage défavorable par côté**, le prix du carnet et **250 ms** de latence minimale par défaut. Consulter le [barème Binance](https://www.binance.com/en/fee/trading) pour les taux par compte et par paire. Une modification de configuration live nécessite un fichier de données distinct.
+`--fee-bps`, `--slip-bps` and `--latency-ms` configure execution assumptions. One basis point (bp) equals 0.01%. By default, the model applies **10 bps in taker fees per side**, **1 bp of adverse slippage per side**, order-book prices and a minimum latency of **250 ms**. See the [Binance fee schedule](https://www.binance.com/en/fee/trading) for account- and pair-specific rates. Changing the live configuration requires a separate data file.
 
-## Poche de cadence et test du levier
+## Cadence portfolio and leverage study
 
-**Cadence** et **Fills rapides** suivent un portefeuille de simulation distinct. Il tente un achat long spot par créneau de 5 s, engage jusqu’à 250 USDT, et cherche à sortir au-dessus des coûts après 1 s ou sur échéance après 2,6 s. L’objectif est de 10 allers-retours sur 60 s. Le carnet, le spread, la latence, les coupures et les refus peuvent réduire le débit. La pause couvre les deux portefeuilles. Le journal identifie les événements de la poche par `wallet: "Rapide"`.
+**Cadence** and **Fills rapides** (Fast fills) track a separate simulated portfolio. It attempts a spot long purchase in each 5-second slot, commits up to 250 USDT, and seeks to exit above costs after 1 second or at the 2.6-second deadline. The target is 10 round trips per 60 seconds. Order-book conditions, spreads, latency, interruptions and rejections can reduce throughput. The pause control covers both portfolios. The journal identifies cadence events with `wallet: "Rapide"`.
 
 ```powershell
 node leverage-study.mjs --session 3 --end-seq 335859 --interest-bps-hour 1
 ```
 
-Le scénario hors ligne rejoue le carnet spot aux tailles 250, 500, 750, 1 250 et 2 500 USDT. Il calcule aussi le rendement moyen par cycle si l’exposition restait à 250 USDT et que seule la marge initiale baissait. Les hypothèses sont 10 pb taker et 1 pb de slippage par côté, avec un taux d’intérêt d’emprunt proratisé hypothétique. Le replay utilise le carnet spot et ne simule pas les règles de liquidation, appels de marge, ou contrats perpétuels. Voir [résultats et périmètre](docs/LEVERAGE.md).
+The offline scenario replays the spot order book at position sizes of 250, 500, 750, 1,250 and 2,500 USDT. It also calculates the average return per cycle if exposure remained at 250 USDT and only the initial margin decreased. Assumptions are 10 bps taker fees and 1 bp slippage per side, with a hypothetical prorated borrowing interest rate. The replay uses the spot order book and does not simulate liquidation rules, margin calls or perpetual contracts. See [results and scope](docs/LEVERAGE.md).
 
-## Exploitation
+## Operations
 
-- `GET /health` donne l’état du flux et les compteurs. `marketReady=true` exige un carnet et des clôtures frais.
-- `GET /api/state` fournit l’état complet. Le client charge `/api/client` environ une fois par seconde et `/api/time` uniquement lorsque le dernier timestamp de l’historique change. Les horodatages API sont en Unix millisecondes. Le client affiche l’heure locale Windows.
-- Le lien d’export télécharge les 10 000 derniers événements d’audit de la session courante en NDJSON. La base conserve les données brutes et l’audit complet.
-- En premier plan, arrêter avec Ctrl+C pour vider les tampons et fermer la base. Au redémarrage, le journal conserve le portefeuille actif et son historique récent. Les ordres virtuels en attente et les candidats repartent à zéro.
-- Superviser l’espace disque. La capture est intégrale pour les flux souscrits. La croissance varie avec le débit des transactions. La rotation est manuelle par changement de fichier `--db`. Pour sauvegarder un fichier actif, utiliser l’API de sauvegarde SQLite ou copier la base après arrêt propre.
-- Garder l’écoute sur loopback. Les commandes de pause vérifient l’origine HTTP locale.
+- `GET /health` reports feed status and counters. `marketReady=true` requires fresh order-book data and closing prices.
+- `GET /api/state` returns the full state. The client loads `/api/client` approximately once per second and `/api/time` only when the latest historical timestamp changes. API timestamps use Unix milliseconds. The client displays local Windows time.
+- The export link downloads the latest 10,000 audit events from the current session in NDJSON format. The database retains raw data and the complete audit trail.
+- When running in the foreground, stop with Ctrl+C to flush buffers and close the database. On restart, the journal retains the active portfolio and its recent history. Pending virtual orders and candidates are reset.
+- Monitor disk space. All data from subscribed feeds is captured. Storage growth varies with trade throughput. Rotation is manual, by changing the `--db` file. To back up an active database, use the SQLite backup API or copy the database after a clean shutdown.
+- Keep the listener bound to loopback. Pause commands validate the local HTTP origin.
 
-Voir [l’architecture et le modèle](docs/ARCHITECTURE.md) pour les équations, le protocole d’optimisation et les limites du simulateur.
+See [architecture and model](docs/ARCHITECTURE.md) for equations, the optimization protocol and simulator limitations.
 
 ## ERRF Phoenix
 
-Les onglets **Phoenix** et **Archive 4 h** donnent le comparatif spot et le backtest futures importé. Voir [l’intégration et le replay](docs/PHOENIX.md).
+The **Phoenix** and **Archive 4 h** tabs provide the spot comparison and imported futures backtest. See [integration and replay](docs/PHOENIX.md).
 
-L’onglet **Étude 4 h** présente le [replay indépendant des règles Pine et le test de robustesse](docs/PHOENIX_RESEARCH.md).
+The **Étude 4 h** (4-hour study) tab presents the [independent Pine-rule replay and robustness test](docs/PHOENIX_RESEARCH.md).
 
-## Recherche microstructure
+## Market microstructure research
 
-Le [banc de replay HFT](docs/MICROSTRUCTURE.md) compare le carnet, le flux exécuté, les frais et la latence sur des sessions figées. Le [test entrée et sortie maker](docs/MAKER_STUDY.md) mesure aussi le coût des sorties forcées.
+The [HFT replay benchmark](docs/MICROSTRUCTURE.md) compares order-book data, executed trades, fees and latency across fixed sessions. The [maker entry and exit study](docs/MAKER_STUDY.md) also measures forced-exit costs.
 
-Le [replay de cotation simultanée](docs/TWO_SIDED.md) compare le résultat à un inventaire passif et documente le collecteur de données différentielles.
+The [two-sided quoting replay](docs/TWO_SIDED.md) compares results against passive inventory and documents the differential data collector.
 
-Le [carnet différentiel reconstruit](docs/DEPTH_REPLAY.md) permet de rejouer les réglages figés sur de nouvelles captures.
+The [reconstructed differential order book](docs/DEPTH_REPLAY.md) enables replay of frozen settings on new captures.
 
-La [campagne paper multi-journées](docs/PAPER_CAMPAIGN.md) fige les réglages et agrège les nouveaux blocs hors échantillon.
+The [multi-day paper-trading campaign](docs/PAPER_CAMPAIGN.md) freezes settings and aggregates new out-of-sample blocks.
 
-Le [mode paper Polymarket BTC Up/Down](docs/POLYMARKET.md) teste le momentum et la semivariance dans un worker indépendant.
-Lancer [Polymarket.cmd](Polymarket.cmd) pour ouvrir l’aperçu natif. Le [banc d’essai clonable](docs/POLY_EDGE.md) documente les variantes, les replays et les résultats par cohorte.
+The [Polymarket BTC Up/Down paper mode](docs/POLYMARKET.md) tests momentum and semivariance in an independent worker. Launch [Polymarket.cmd](Polymarket.cmd) to open the native preview. The [reproducible test bench](docs/POLY_EDGE.md) documents variants, replays and cohort-level results.
+
